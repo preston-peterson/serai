@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#0d1117"/>
+  <!-- serai arch shell -->
+  <path d="M13 51 V29 Q13 13 32 13 Q51 13 51 29 V51" fill="none"
+        stroke="#4c8df6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- apron / ground -->
+  <line x1="9" y1="51" x2="55" y2="51" stroke="#4c8df6" stroke-width="4" stroke-linecap="round"/>
+  <!-- terminal prompt: caret + cursor -->
+  <path d="M24 31 l6 6 l-6 6" fill="none" stroke="#c9d1d9" stroke-width="3.25"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="35" y1="43" x2="43" y2="43" stroke="#c9d1d9" stroke-width="3.25" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,32 @@
+[project]
+name = "serai"
+dynamic = ["version"]   # single source of truth: serai/__init__.py __version__
+description = "A single attach point for terminal, SSH, and Claude Code sessions across local and remote hosts."
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "paramiko>=3.4",
+    "python-multipart>=0.0.9",
+    "cryptography>=42",          # self-signed TLS in serai.tls (already pulled in by paramiko)
+]
+
+[project.optional-dependencies]
+# `pip install -e ".[test]"` — what CI installs, and what the README/CLAUDE.md
+# previously only described in prose.
+test = [
+    "pytest>=8",
+    "httpx>=0.27",          # fastapi.testclient
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["serai"]
+
+[tool.setuptools.dynamic]
+version = {attr = "serai.__version__"}

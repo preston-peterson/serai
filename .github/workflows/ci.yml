@@ -1,0 +1,59 @@
+# Runs the test suite on the ends of the supported Python range (and a
+# midpoint), because that's where the interesting breakage lives: 3.10 is the
+# floor declared in pyproject, 3.14 is what development actually happens on.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the suite only reads the checkout. See the repo's
+# SECURITY.md for why this project is conservative about ambient permissions.
+permissions:
+  contents: read
+
+# A second push to the same branch supersedes the first; don't burn minutes
+# finishing a run nobody will read.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # tmux is the persistence substrate, so the tests that exercise real
+      # sessions are skipped when it's absent. Installing it here is the whole
+      # point: a green run that silently skipped them is false confidence.
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux
+
+      # Fails the job outright if the install above didn't take, rather than
+      # letting pytest quietly skip past it.
+      - name: Verify tmux is present
+        run: tmux -V
+
+      - name: Install serai and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      # -rs reports the reason for any skip, so a growing skip list is visible
+      # in the log instead of hiding behind the pass count.
+      - name: Run tests
+        run: pytest -q -rs

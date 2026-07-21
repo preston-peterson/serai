@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# Personal Claude Code settings / context, not for the repo
+# (HANDOFF*.md and .claude/ are covered by the pii-guard block below)
+CLAUDE.md
+CLAUDE.local.md
+
+# Local runtime data
+*.log
+
+# --- pii-guard: maintainer-only docs + local secrets ---
+HANDOFF*.md
+AGENT_GUARDRAILS.md
+.claude/
+.env
+.env.*
+*.local.yaml
+config.local.*
+secrets.*
+
+# audit reports (local only — see ~/git/github-best-practices)
+audits/

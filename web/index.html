@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>serai</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/xterm.min.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <button id="rail-toggle" class="btn mobile-only" type="button" title="Sessions">&#9776;</button>
+      <button id="brand" class="title" type="button" title="Back to the board">ser<span class="k">a</span>i</button>
+      <div id="ws-picker" class="picker">
+        <button id="ws-btn" class="picker-btn" type="button" title="Filter by tag">&#x25C7; all tags &#x25BE;</button>
+        <div id="ws-menu" class="menu" hidden></div>
+      </div>
+      <span class="topbar-sp"></span>
+      <button id="board-toggle" class="btn" type="button" title="Toggle between the board and your open session">&#x229E; board</button>
+      <button id="jump" class="srch" type="button" title="Jump to a session (double-tap Shift)">&#x2315; jump to session&hellip;</button>
+      <button id="new-session" class="btn primary" title="New session">+ New</button>
+      <button id="settings" class="btn" title="Terminal theme &amp; font">&#x2699;</button>
+      <button id="account" class="avatar" title="Account &amp; users" hidden></button>
+      <div id="new-session-form" class="popover" hidden>
+        <div class="form-row">
+          <label for="ns-host">host</label>
+          <select id="ns-host"></select>
+          <button id="ns-addhost" class="btn ns-add" type="button" title="Add a host to ~/.ssh/config" hidden>+</button>
+        </div>
+        <div class="form-row">
+          <label for="ns-kind">kind</label>
+          <select id="ns-kind">
+            <option value="shell">shell</option>
+            <option value="claude">claude</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="ns-label">label</label>
+          <input id="ns-label" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-row" id="ns-path-row" hidden>
+          <label for="ns-path">path</label>
+          <input id="ns-path" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-row" id="ns-resume-row" hidden>
+          <label for="ns-resume">session</label>
+          <select id="ns-resume">
+            <option value="">new</option>
+            <option value="continue">continue last</option>
+            <option value="resume">resume…</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button id="ns-cancel" class="btn" type="button">cancel</button>
+          <button id="ns-submit" class="btn primary" type="button">attach</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="board-view" class="board-view">
+      <div class="board-bar">
+        <span id="board-summary" class="board-summary"></span>
+        <span class="board-bar-sp"></span>
+        <input id="board-filter" class="board-filter" type="text" placeholder="filter sessions" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="board-grid" class="board-grid"></div>
+      <div class="board-empty-state" id="board-empty-state" hidden></div>
+    </div>
+
+    <div class="layout" hidden>
+      <aside class="sidebar rail">
+        <div id="restore-banner" class="restore-banner" hidden>
+          <div class="restore-head">
+            <span id="restore-msg" class="restore-msg"></span>
+            <button id="restore-view" class="restore-link" type="button">view</button>
+            <button id="restore-dismiss" class="restore-x" type="button" title="dismiss">✕</button>
+          </div>
+          <div id="restore-list" class="restore-list" hidden></div>
+          <div class="restore-actions">
+            <button id="restore-selected" class="btn" type="button" hidden>resume selected</button>
+            <button id="restore-all" class="btn primary" type="button">resume all</button>
+          </div>
+        </div>
+        <nav id="tree" class="tree"><div class="tree-loading"><span class="spinner"></span>loading sessions…</div></nav>
+        <div id="broadcast" class="broadcast" hidden>
+          <div class="bcast-row">
+            <input id="bcast-input" type="text" placeholder="run on selected…"
+                   autocomplete="off" spellcheck="false" />
+            <button id="bcast-send" class="btn primary" type="button">send</button>
+          </div>
+          <div class="bcast-foot">
+            <span id="bcast-status" class="bcast-status muted">0 selected</span>
+            <button id="bcast-clear" class="bcast-clear" type="button">clear</button>
+          </div>
+        </div>
+      </aside>
+
+      <div id="hsplit" class="hsplit" title="drag to resize"></div>
+
+      <main class="main">
+        <div id="pane-tabs" class="ptabs"></div>
+        <div id="term-row" class="term-row"></div>
+        <!-- phone only: the keys a terminal needs that a soft keyboard doesn't offer -->
+        <div id="keybar" class="keybar mobile-only">
+          <button class="kcap wide" data-k="esc" type="button">esc</button>
+          <button class="kcap wide" data-k="tab" type="button">tab</button>
+          <button class="kcap wide" data-k="ctrlc" type="button">^C</button>
+          <button class="kcap" data-k="up" type="button">&#9650;</button>
+          <button class="kcap" data-k="down" type="button">&#9660;</button>
+          <button class="kcap" data-k="left" type="button">&#9664;</button>
+          <button class="kcap" data-k="right" type="button">&#9654;</button>
+          <button class="kcap" data-k="pipe" type="button">|</button>
+          <button class="kcap" data-k="tilde" type="button">~</button>
+          <button class="kcap" data-k="slash" type="button">/</button>
+          <button class="kcap" data-k="dash" type="button">-</button>
+        </div>
+
+        <div id="vsplit" class="vsplit" title="drag to resize"></div>
+
+        <div class="pane-head files-head">
+          <button id="files-toggle" class="btn files-toggle" type="button" title="Collapse the file browser">▾</button>
+          <span id="files-host" class="mono muted"></span>
+          <div id="files-crumbs" class="files-crumbs" title="click a segment to jump — click the empty end (or Ctrl+L) to type a path"></div>
+          <input id="files-path" class="path-input" type="text" autocomplete="off"
+                 spellcheck="false" placeholder="type a path, Enter to go" hidden />
+          <button id="files-refresh" class="btn" type="button" title="refresh">↻</button>
+          <label class="btn upload">
+            upload<input id="upload" type="file" hidden />
+          </label>
+        </div>
+        <div id="upload-bar" class="upload-bar" hidden>
+          <span id="upload-label" class="mono"></span>
+          <div class="upbar"><div id="upbar-fill" class="upbar-fill"></div></div>
+        </div>
+        <div id="files" class="files" tabindex="0">
+          <div id="files-cols" class="files-cols">
+            <span class="fcol fcol-name" data-sort="name">Name<span class="sort-ind"></span></span>
+            <span class="fcol fcol-size" data-sort="size" data-col="size"><span class="col-resize"></span>Size<span class="sort-ind"></span></span>
+            <span class="fcol fcol-date" data-sort="mtime" data-col="date"><span class="col-resize"></span>Modified<span class="sort-ind"></span></span>
+          </div>
+          <div id="file-rows"></div>
+        </div>
+      </main>
+    </div>
+
+    <div id="rail-scrim" class="rail-scrim mobile-only" hidden></div>
+
+    <!-- phone only: what the top bar can't hold at 390px -->
+    <nav id="mobile-nav" class="mobile-nav">
+      <button class="mnav" data-m="board" type="button"><span class="g">&#x229E;</span>Board</button>
+      <button class="mnav" data-m="jump" type="button"><span class="g">&#x2315;</span>Jump</button>
+      <button class="mnav" data-m="files" type="button"><span class="g">&#x25A4;</span>Files</button>
+      <button class="mnav" data-m="new" type="button"><span class="g">&#xFF0B;</span>New</button>
+    </nav>
+
+    <div id="toasts" class="toasts"></div>
+
+    <div id="term-menu" class="ctx-menu" hidden>
+      <button id="tm-copy" class="ctx-item" type="button">Copy</button>
+      <button id="tm-paste" class="ctx-item" type="button">Paste</button>
+    </div>
+
+    <div id="sheet-scrim" class="sheet-scrim" hidden></div>
+
+    <div id="file-menu" class="ctx-menu" hidden>
+      <div class="sheet-grab"></div>
+      <button id="fm-open" class="ctx-item" type="button">Open</button>
+      <button id="fm-download" class="ctx-item" type="button">Download</button>
+      <div class="ctx-sep"></div>
+      <button id="fm-cut" class="ctx-item" type="button">Cut</button>
+      <button id="fm-copy" class="ctx-item" type="button">Copy</button>
+      <button id="fm-paste" class="ctx-item" type="button">Paste</button>
+      <div class="ctx-sep"></div>
+      <button id="fm-rename" class="ctx-item" type="button">Rename</button>
+      <button id="fm-delete" class="ctx-item" type="button">Delete</button>
+      <div class="ctx-sep"></div>
+      <button id="fm-newdir" class="ctx-item" type="button">New folder</button>
+    </div>
+
+    <div id="confirm-form" class="modal-overlay" hidden>
+      <div class="edit-popover">
+        <div id="confirm-msg" class="confirm-msg"></div>
+        <div class="form-actions">
+          <button id="confirm-cancel" class="btn" type="button">cancel</button>
+          <button id="confirm-ok" class="btn danger" type="button">delete</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="addhost-form" class="modal-overlay" hidden>
+      <div class="edit-popover">
+        <div class="form-row">
+          <label for="ah-alias">alias</label>
+          <input id="ah-alias" type="text" autocomplete="off" spellcheck="false" placeholder="how you'll refer to it" />
+        </div>
+        <div class="form-row">
+          <label for="ah-hostname">host</label>
+          <input id="ah-hostname" type="text" autocomplete="off" spellcheck="false" placeholder="name or IP" />
+        </div>
+        <div class="form-row">
+          <label for="ah-user">user</label>
+          <input id="ah-user" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-row">
+          <label for="ah-port">port</label>
+          <input id="ah-port" type="number" min="1" max="65535" value="22" />
+        </div>
+        <div class="form-row">
+          <label for="ah-group">group</label>
+          <input id="ah-group" type="text" autocomplete="off" spellcheck="false" placeholder="optional" />
+        </div>
+        <div class="form-row">
+          <label for="ah-tags">tags</label>
+          <input id="ah-tags" type="text" autocomplete="off" spellcheck="false" placeholder="comma, separated" />
+        </div>
+        <div id="ah-error" class="ah-error"></div>
+        <div class="form-actions">
+          <button id="ah-cancel" class="btn" type="button">cancel</button>
+          <button id="ah-add" class="btn primary" type="button">add host</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-form" class="modal-overlay" hidden>
+      <div class="edit-popover">
+        <div class="form-row">
+          <label for="set-theme">theme</label>
+          <select id="set-theme"></select>
+        </div>
+        <div class="form-row">
+          <label for="set-font">font</label>
+          <select id="set-font"></select>
+        </div>
+        <div class="form-row">
+          <label for="set-size">size</label>
+          <input id="set-size" type="number" min="8" max="32" />
+        </div>
+        <div class="form-row">
+          <label for="set-scrollback" title="lines of tmux scroll history; applies to newly-created sessions">scroll history</label>
+          <input id="set-scrollback" type="number" min="0" max="500000" step="1000"
+                 title="lines of tmux scroll history; applies to newly-created sessions" />
+        </div>
+        <div class="form-row">
+          <label for="set-cols">columns</label>
+          <select id="set-cols">
+            <option value="0">fit to pane</option>
+            <option value="80">80</option>
+            <option value="100">100</option>
+            <option value="120">120</option>
+            <option value="132">132</option>
+            <option value="160">160</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="set-cursor">cursor</label>
+          <select id="set-cursor">
+            <option value="block">block</option>
+            <option value="bar">bar</option>
+            <option value="underline">underline</option>
+          </select>
+        </div>
+        <div class="form-row check">
+          <label for="set-blink">blink</label>
+          <input id="set-blink" type="checkbox" />
+        </div>
+        <div class="form-row check">
+          <label for="set-bold">bold = bright</label>
+          <input id="set-bold" type="checkbox" />
+        </div>
+        <div class="form-row check">
+          <label for="set-mouse">mouse scrollback</label>
+          <input id="set-mouse" type="checkbox" title="tmux mouse mode: wheel scrolls history (hold Shift to select text)" />
+        </div>
+        <div class="form-row">
+          <label for="set-layout">pane layout</label>
+          <select id="set-layout" title="How multiple terminal panes are arranged (needs 2+ panes)">
+            <option value="row">row</option>
+            <option value="grid">grid</option>
+          </select>
+        </div>
+        <div class="form-row check">
+          <label for="set-fleet">fleet broadcast</label>
+          <input id="set-fleet" type="checkbox" title="Pick several sessions in the rail and send one command to all of them" />
+        </div>
+        <div class="form-actions">
+          <button id="set-close" class="btn primary" type="button">done</button>
+        </div>
+        <div class="set-foot"><span id="version-foot" class="mono"></span></div>
+      </div>
+    </div>
+
+    <div id="edit-form" class="modal-overlay" hidden>
+      <div class="edit-popover">
+        <div class="form-row">
+          <label for="edit-label">label</label>
+          <input id="edit-label" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-row">
+          <label for="edit-tags">tags</label>
+          <input id="edit-tags" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="comma, separated" />
+        </div>
+        <div class="form-row">
+          <label for="edit-dir">start in</label>
+          <input id="edit-dir" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="~/git/project"
+                 title="Where the file browser opens for this session, and where it restarts after a reboot. Doesn't move a shell that's already running." />
+        </div>
+        <div class="form-actions">
+          <button id="edit-cancel" class="btn" type="button">cancel</button>
+          <button id="edit-save" class="btn primary" type="button">save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="auth-overlay" class="auth-overlay" hidden>
+      <form id="auth-card" class="auth-card" autocomplete="on">
+        <div class="auth-brand"><img src="/static/favicon.svg" width="22" height="22" alt="" /> serai</div>
+        <div id="auth-title" class="auth-title">Sign in</div>
+        <div id="auth-msg" class="auth-msg" hidden></div>
+        <div class="form-row" id="auth-setup-row" hidden>
+          <label for="auth-token">setup code</label>
+          <input id="auth-token" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-row">
+          <label for="auth-user">user</label>
+          <input id="auth-user" type="text" autocomplete="username" spellcheck="false" />
+        </div>
+        <div class="form-row">
+          <label for="auth-pass">password</label>
+          <input id="auth-pass" type="password" autocomplete="current-password" />
+        </div>
+        <div class="form-row" id="auth-confirm-row" hidden>
+          <label for="auth-pass2">confirm</label>
+          <input id="auth-pass2" type="password" autocomplete="new-password" />
+        </div>
+        <div class="form-actions">
+          <button id="auth-submit" class="btn primary" type="submit">sign in</button>
+        </div>
+        <div id="auth-hint" class="auth-hint" hidden></div>
+      </form>
+    </div>
+
+    <div id="account-form" class="modal-overlay" hidden>
+      <div class="edit-popover account-popover">
+        <div class="acct-head">signed in as <strong id="acct-user" class="mono"></strong></div>
+
+        <div class="acct-section">
+          <div class="acct-label">change my password</div>
+          <div class="form-row">
+            <label for="acct-pass">new</label>
+            <input id="acct-pass" type="password" autocomplete="new-password" />
+          </div>
+          <div class="form-actions">
+            <button id="acct-pass-save" class="btn" type="button">update</button>
+          </div>
+        </div>
+
+        <div id="acct-network" class="acct-section" hidden>
+          <div class="acct-label">network &amp; hostname</div>
+          <div class="form-row">
+            <label for="net-bind">listen</label>
+            <input id="net-bind" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="0.0.0.0 = all interfaces, 127.0.0.1 = localhost" />
+          </div>
+          <div class="form-row">
+            <label for="net-hostnames">names</label>
+            <input id="net-hostnames" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="serai.lan, 192.0.2.10" />
+          </div>
+          <div id="net-info" class="acct-hint"></div>
+          <div class="form-actions">
+            <button id="net-save" class="btn" type="button">apply &amp; restart</button>
+          </div>
+        </div>
+
+        <div id="acct-users" class="acct-section" hidden>
+          <div class="acct-label">users</div>
+          <div id="acct-user-list" class="acct-user-list"></div>
+          <div class="form-row">
+            <label for="acct-new-user">add</label>
+            <input id="acct-new-user" type="text" placeholder="username" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="form-row">
+            <label for="acct-new-pass">pass</label>
+            <input id="acct-new-pass" type="password" autocomplete="new-password" />
+          </div>
+          <div class="form-row check">
+            <label for="acct-new-admin">admin</label>
+            <input id="acct-new-admin" type="checkbox" />
+          </div>
+          <div class="form-actions">
+            <button id="acct-add" class="btn" type="button">add user</button>
+          </div>
+        </div>
+
+        <div class="form-actions acct-foot">
+          <button id="acct-logout" class="btn" type="button">log out</button>
+          <button id="acct-close" class="btn primary" type="button">done</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="palette" class="palette-overlay" hidden>
+      <div class="palette">
+        <input id="palette-input" type="text" placeholder="jump to session…"
+               autocomplete="off" spellcheck="false" />
+        <div id="palette-list" class="palette-list"></div>
+        <div class="palette-hint">
+          <span>&#x2191;&#x2193; navigate</span>
+          <span>&#x21b5; jump</span>
+          <span>esc close</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/xterm.min.js"></script>
+  <script src="/static/xterm-addon-fit.min.js"></script>
+  <script src="/static/themes.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

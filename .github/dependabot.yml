@@ -1,0 +1,21 @@
+# Dependabot keeps the five runtime deps in pyproject.toml current. Monthly is
+# deliberate: serai has a small, stable dependency surface, and weekly noise on a
+# solo project just trains you to ignore the PRs.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  # The CI workflow pins actions by major tag; this keeps those pins current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
