@@ -1,5 +1,8 @@
 # serai
 
+[![CI](https://github.com/preston-peterson/serai/actions/workflows/ci.yml/badge.svg)](https://github.com/preston-peterson/serai/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A single attach point for your terminal, SSH, and Claude Code sessions — across
 the local machine and remote hosts — backed by tmux for persistence.
 
