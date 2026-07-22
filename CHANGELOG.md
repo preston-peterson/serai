@@ -9,6 +9,22 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.15.2]
+
+### Fixed
+
+- **Settings could be silently reverted by another open tab.** The UI mirrors
+  its preferences to the server as one blob, and the server replaced its copy on
+  every save. A tab that had been open since before a preference existed didn't
+  know that key, so the next time it saved anything — a splitter drag was enough
+  — it dropped the setting for every other tab. The server now **merges** what a
+  tab sends. This affected any preference, not just the one it was reported
+  through.
+- **⚙ → updates → check didn't keep your choice.** Picking *daily* and returning
+  later showed *weekly* again. Three causes: the above, a save/refetch race that
+  could read back the pre-change value and overwrite it, and a picker that read
+  the server's copy rather than your stored choice.
+
 ## [2.15.1]
 
 ### Fixed

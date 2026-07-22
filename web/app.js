@@ -439,18 +439,31 @@ let _pushTimer = null;
 // (like "the directory I'm browsing") would make every open tab fight over it
 // -- one stale tab could pin the file pane to an old directory forever.
 const SYNC_LOCAL_ONLY = new Set(["serai.files.lastdirs"]);
+function syncBlob() {
+  const blob = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith("serai.") && !SYNC_LOCAL_ONLY.has(k)) blob[k] = localStorage.getItem(k);
+  }
+  return blob;
+}
+// The server merges what we send, so a tab that predates a preference no longer
+// drops that key for everyone else when it saves.
+function pushSettings() {
+  return fetch("/api/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(syncBlob()),
+  }).catch(() => { /* offline -- keep the local copy */ });
+}
 function schedulePush() {
   clearTimeout(_pushTimer);
-  _pushTimer = setTimeout(() => {
-    const blob = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("serai.") && !SYNC_LOCAL_ONLY.has(k)) blob[k] = localStorage.getItem(k);
-    }
-    fetch("/api/settings", {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(blob),
-    }).catch(() => { /* offline -- keep the local copy */ });
-  }, 500);
+  _pushTimer = setTimeout(pushSettings, 500);
+}
+// Save now and resolve when the server has it -- for the cases that read state
+// straight back and would otherwise race the debounce.
+function pushSettingsNow() {
+  clearTimeout(_pushTimer);
+  _pushTimer = null;
+  return pushSettings();
 }
 try {
   _rawSetItem = localStorage.setItem.bind(localStorage);
@@ -2727,7 +2740,7 @@ function openSettings() {
   if (fleetCb) fleetCb.checked = fleetMode;
   const updSel = document.getElementById("set-updates");
   if (updSel) {
-    updSel.value = updateState.interval || UPDATE_DEFAULT;
+    updSel.value = currentInterval();
     // SERAI_UPDATE_CHECK=off is an install-wide decision; don't pretend the
     // dropdown can override it
     updSel.disabled = !!updateState.env_locked;
@@ -2745,6 +2758,17 @@ function closeSettings() { settingsForm.hidden = true; }
 const UPDATE_DEFAULT = "weekly";
 const UPDATE_KEY = "serai.updates.interval";
 let updateState = { interval: UPDATE_DEFAULT };
+
+// What the picker should show. Your stored choice wins over the server's view:
+// the server answer can lag a save, and reading it back was what made a fresh
+// choice snap to the default. An install-wide SERAI_UPDATE_CHECK=off still wins
+// over both, because no local preference can re-enable it.
+function currentInterval() {
+  if (updateState.env_locked) return "off";
+  let stored = null;
+  try { stored = localStorage.getItem(UPDATE_KEY); } catch { /* storage locked down */ }
+  return stored || updateState.interval || UPDATE_DEFAULT;
+}
 
 function fmtAgo(ts) {
   if (!ts) return "never checked";
@@ -2777,7 +2801,9 @@ function renderUpdateStatus() {
     el.classList.add("warn");
   } else if (s.no_releases) {
     el.textContent = "no releases published yet";
-  } else if (s.interval === "off") {
+  } else if (currentInterval() === "off") {
+    // your choice, not the server's lagging copy -- picking "never" should read
+    // as off immediately rather than after the next round trip
     el.textContent = "checks are off";
   } else {
     el.textContent = `up to date · ${fmtAgo(s.checked_at)}`;
@@ -2794,13 +2820,16 @@ async function refreshUpdates(force) {
   renderUpdateStatus();
 }
 
-document.getElementById("set-updates")?.addEventListener("change", (e) => {
+document.getElementById("set-updates")?.addEventListener("change", async (e) => {
   const choice = e.target.value;
   localStorage.setItem(UPDATE_KEY, choice);   // syncs to the server blob
   updateState.interval = choice;
   renderUpdateStatus();
-  // a fresh choice should take effect now, not at the next page load
-  setTimeout(() => refreshUpdates(false), 700);
+  // Save and wait for it to land before asking the server anything: the old
+  // code refetched on a timer and could read back the pre-change value, which
+  // then overwrote the choice you'd just made.
+  await pushSettingsNow();
+  refreshUpdates(false);   // a fresh cadence applies now, not at the next load
 });
 
 document.getElementById("upd-check")?.addEventListener("click", async (e) => {

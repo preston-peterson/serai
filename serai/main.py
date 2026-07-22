@@ -326,12 +326,17 @@ async def api_get_settings() -> JSONResponse:
 
 @app.put("/api/settings")
 async def api_put_settings(request: Request) -> JSONResponse:
-    """Replace the persisted preference blob. UI prefs only -- no credentials."""
+    """Merge into the persisted preference blob. UI prefs only -- no credentials.
+
+    Merge, not replace: each tab sends the keys it knows about, and a tab opened
+    before a preference existed would otherwise drop that key for every other
+    tab the next time it saved anything.
+    """
     data = await request.json()
     if not isinstance(data, dict):
         return JSONResponse({"error": "object required"}, status_code=400)
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_pool, settings.save, data)
+    await loop.run_in_executor(_pool, settings.merge, data)
     return JSONResponse({"ok": True})
 
 

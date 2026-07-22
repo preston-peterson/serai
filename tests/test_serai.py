@@ -1801,3 +1801,41 @@ def test_head_on_the_ui_routes_matches_get():
         # a HEAD reply carries the headers of the GET but no body
         assert head_r.headers.get("content-type") == get_r.headers.get("content-type")
         assert head_r.content == b""
+
+
+# --- settings merge --------------------------------------------------------
+# The UI mirrors its whole localStorage into one blob. Replacing on write made
+# that last-writer-wins ACROSS TABS: a tab opened before a preference existed
+# has no such key, so its next save dropped the key for everyone.
+
+def test_settings_put_merges_instead_of_replacing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_SETTINGS", str(tmp_path / "settings.json"))
+    c = TestClient(app)
+    # tab A knows about the update cadence and saves it
+    assert c.put("/api/settings", json={"serai.updates.interval": "daily",
+                                        "serai.term.font": "mono"}).status_code == 200
+    # tab B has been open since before that setting existed; it saves a splitter
+    assert c.put("/api/settings", json={"serai.term.font": "mono",
+                                        "serai.files.height": "240"}).status_code == 200
+    blob = c.get("/api/settings").json()
+    assert blob["serai.updates.interval"] == "daily", "tab B clobbered a key it never knew about"
+    assert blob["serai.files.height"] == "240"       # and tab B's own write landed
+
+
+def test_settings_merge_keeps_unrelated_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_SETTINGS", str(tmp_path / "settings.json"))
+    settings.save({"a": "1", "b": "2"})
+    assert settings.merge({"b": "3", "c": "4"}) == {"a": "1", "b": "3", "c": "4"}
+    assert settings.load() == {"a": "1", "b": "3", "c": "4"}
+
+
+def test_update_interval_survives_a_save_from_an_unaware_tab(tmp_path, monkeypatch):
+    """The reported bug, end to end: set daily, let another tab save, still daily."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("SERAI_SETTINGS", str(tmp_path / "settings.json"))
+    monkeypatch.delenv("SERAI_UPDATE_CHECK", raising=False)
+    c = TestClient(app)
+    c.put("/api/settings", json={updates.SETTING_KEY: "daily"})
+    assert updates.interval() == "daily"
+    c.put("/api/settings", json={"serai.term.size": "15"})     # an older tab saves
+    assert updates.interval() == "daily", "the cadence reverted to the default"

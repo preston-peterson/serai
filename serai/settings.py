@@ -16,7 +16,12 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
+
+# Serialises read-modify-write in merge(); two tabs saving at once would
+# otherwise interleave load and save and lose one of the writes.
+_lock = threading.Lock()
 
 
 def _path() -> Path:
@@ -43,3 +48,23 @@ def save(data: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def merge(patch: dict) -> dict:
+    """Apply ``patch`` over the stored settings and return the result.
+
+    The UI mirrors its whole localStorage into one blob, so a plain replace made
+    the sync last-writer-wins *across tabs*: a tab opened before some preference
+    existed doesn't have that key, and the next time it saved anything at all it
+    silently dropped the key for everyone. Merging keeps a tab's write to the
+    keys it actually knows about.
+
+    Nothing in the UI deletes a ``serai.*`` key, so no key ever needs to be
+    removed by a write -- if that changes, this needs an explicit tombstone
+    rather than going back to replace.
+    """
+    with _lock:
+        data = load()
+        data.update(patch)
+        save(data)
+        return data
