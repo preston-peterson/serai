@@ -9,6 +9,23 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.15.3]
+
+### Fixed
+
+- **On a phone, an attached session couldn't be scrolled** — pane history above
+  the fold was unreachable. A one-finger vertical drag over the terminal now
+  scrolls tmux's history, and dragging back down returns to the live output.
+
+  There was nothing for the browser to scroll: tmux owns the scrollback and
+  repaints the visible pane, so the terminal viewport is exactly as tall as its
+  content. The drag is now translated into the same wheel events a desktop
+  scroll produces, which tmux already understands. As on desktop, this needs
+  ⚙ → *mouse scrollback* on (the default); with it off, tmux ignores scrolling
+  from the terminal either way.
+
+  Horizontal drags are left alone, so text selection still works.
+
 ## [2.15.2]
 
 ### Fixed

@@ -203,12 +203,76 @@ function createPane() {
     reconnectAttempts: 0, reconnectTimer: null, stableTimer: null,
   };
 
+  // Drag to scroll, on touch.
+  //
+  // An attached session has nothing for the browser to scroll: tmux owns the
+  // scrollback and repaints the visible pane, so xterm's own viewport is exactly
+  // as tall as its content (measured: scrollHeight === clientHeight). A finger
+  // drag therefore moved nothing, and pane history above the fold was
+  // unreachable on a phone.
+  //
+  // What does work is the wheel: xterm encodes it as a mouse event and tmux
+  // scrolls into its history (that is what "mouse scrollback" in ⚙ enables). So
+  // translate a one-finger vertical drag into the wheel events tmux already
+  // understands, rather than trying to make the DOM scroll something that isn't
+  // there. With mouse mode off tmux ignores the wheel -- exactly as on desktop.
+  function enableTouchScroll(pane) {
+    const surface = pane.termEl;
+    let lastY = null, lastX = null, acc = 0, mode = null;   // mode: "scroll" | "ignore"
+
+    const lineHeight = () => {
+      const vp = surface.querySelector(".xterm-viewport");
+      const rows = pane.term.rows || 24;
+      return Math.max(12, Math.round(((vp && vp.clientHeight) || 480) / rows));
+    };
+
+    surface.addEventListener("touchstart", (ev) => {
+      if (ev.touches.length !== 1) { mode = "ignore"; return; }
+      lastY = ev.touches[0].clientY; lastX = ev.touches[0].clientX;
+      acc = 0; mode = null;                     // decided on the first move
+    }, { passive: true });
+
+    surface.addEventListener("touchmove", (ev) => {
+      if (mode === "ignore" || lastY === null || ev.touches.length !== 1) return;
+      const y = ev.touches[0].clientY, x = ev.touches[0].clientX;
+      if (mode === null) {
+        // Claim the gesture only once it is clearly vertical, so a horizontal
+        // drag still selects text or reaches anything else listening.
+        const dy = Math.abs(y - lastY), dx = Math.abs(x - lastX);
+        if (dy < 6 && dx < 6) return;
+        mode = dy > dx ? "scroll" : "ignore";
+        if (mode === "ignore") return;
+      }
+      acc += y - lastY; lastY = y; lastX = x;
+
+      const step = lineHeight();
+      const lines = Math.trunc(acc / step);
+      if (!lines) { ev.preventDefault(); return; }   // still ours: don't let the page move
+      acc -= lines * step;
+      const vp = surface.querySelector(".xterm-viewport");
+      if (!vp) return;
+      // finger down => older output, which is wheel *up* (negative deltaY)
+      const delta = lines > 0 ? -step : step;
+      for (let i = 0; i < Math.min(Math.abs(lines), 12); i++) {
+        vp.dispatchEvent(new WheelEvent("wheel", {
+          deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true,
+        }));
+      }
+      ev.preventDefault();     // stop the page rubber-banding under the terminal
+    }, { passive: false });
+
+    const end = () => { lastY = lastX = null; acc = 0; mode = null; };
+    surface.addEventListener("touchend", end, { passive: true });
+    surface.addEventListener("touchcancel", end, { passive: true });
+  }
+
   // keystrokes -> this pane's websocket
   t.onData((d) => {
     if (p.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(new TextEncoder().encode(d));
   });
   // auto-copy a selection when the mouse is released ("copy on select")
   t.element.addEventListener("mouseup", () => { paneCopy(p); });
+  enableTouchScroll(p);
   t.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown" || !(e.ctrlKey || e.shiftKey)) return true;
     const ctrl = e.ctrlKey, shift = e.shiftKey;
