@@ -284,6 +284,21 @@
           <label for="set-fleet">fleet broadcast</label>
           <input id="set-fleet" type="checkbox" title="Pick several sessions in the rail and send one command to all of them" />
         </div>
+        <div class="form-sect">updates</div>
+        <div class="form-row">
+          <label for="set-updates" title="How often serai asks GitHub whether a newer release exists. The check runs on the server, once per instance.">check</label>
+          <select id="set-updates">
+            <option value="daily">daily</option>
+            <option value="weekly">weekly</option>
+            <option value="monthly">monthly</option>
+            <option value="off">never</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <span class="form-note" id="upd-status">&nbsp;</span>
+          <button id="upd-check" class="btn" type="button">check now</button>
+        </div>
+
         <div class="form-actions">
           <button id="set-close" class="btn primary" type="button">done</button>
         </div>

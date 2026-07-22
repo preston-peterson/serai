@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisc
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, files, netcfg, sessions, settings, store
+from . import auth, config, files, netcfg, sessions, settings, store, updates
 from . import __version__
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -330,6 +330,21 @@ async def api_put_settings(request: Request) -> JSONResponse:
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(_pool, settings.save, data)
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/updates")
+async def api_updates() -> JSONResponse:
+    """Whether a newer serai has been released. Polls upstream only when the
+    operator's chosen interval says a check is due -- see serai.updates."""
+    loop = asyncio.get_event_loop()
+    return JSONResponse(await loop.run_in_executor(_pool, updates.status))
+
+
+@app.post("/api/updates/check")
+async def api_updates_check() -> JSONResponse:
+    """The settings panel's "check now" -- poll regardless of the interval."""
+    loop = asyncio.get_event_loop()
+    return JSONResponse(await loop.run_in_executor(_pool, updates.status, True))
 
 
 @app.get("/api/hosts")

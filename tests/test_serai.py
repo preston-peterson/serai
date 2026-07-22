@@ -24,7 +24,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from serai import auth, config, files, netcfg, sessions, settings, store, tls
+import serai
+from serai import auth, config, files, netcfg, sessions, settings, store, tls, updates
 from serai.main import app
 
 requires_tmux = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
@@ -1699,3 +1700,90 @@ def test_version_header_absent_for_anonymous_callers(auth_on):
     r = TestClient(app).get("/api/sessions")
     assert r.status_code == 401
     assert "x-serai-version" not in r.headers
+
+
+# --- update check ----------------------------------------------------------
+# The network call itself is never exercised; _fetch_latest is monkeypatched.
+# What matters here is the version comparison, the interval/opt-out precedence,
+# and that an unreachable GitHub degrades instead of raising.
+
+def _updates_env(tmp_path, monkeypatch):
+    """Point both the settings blob and the update cache at a temp dir."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("SERAI_SETTINGS", str(tmp_path / "settings.json"))
+    monkeypatch.delenv("SERAI_UPDATE_CHECK", raising=False)
+
+
+def test_update_version_compare_handles_prefix_and_prerelease():
+    newer = updates.is_newer
+    assert newer("2.15.0", "2.14.2")
+    assert newer("v2.15.0", "2.14.2")          # a "v" prefix is not a version bump
+    assert not newer("2.14.2", "2.14.2")
+    assert not newer("2.14.1", "2.14.2")
+    assert not newer("2.9.0", "2.14.2")        # numeric, not lexical: 9 < 14
+    assert newer("2.14.10", "2.14.2")
+    assert newer("2.15.0", "2.15.0-rc1")       # a release beats its own pre-release
+    assert not newer("2.15.0-rc1", "2.15.0")
+    assert not newer("garbage", "2.14.2")      # unparseable never claims an update
+
+
+def test_update_interval_defaults_to_weekly_and_reads_the_settings_blob(tmp_path, monkeypatch):
+    _updates_env(tmp_path, monkeypatch)
+    assert updates.interval() == "weekly"                      # the shipped default
+    settings.save({updates.SETTING_KEY: "daily"})
+    assert updates.interval() == "daily"
+    settings.save({updates.SETTING_KEY: '"monthly"'})          # JSON-quoted localStorage value
+    assert updates.interval() == "monthly"
+    settings.save({updates.SETTING_KEY: "nonsense"})
+    assert updates.interval() == "weekly"                      # unknown -> default, not crash
+
+
+def test_update_env_off_overrides_the_stored_choice(tmp_path, monkeypatch):
+    _updates_env(tmp_path, monkeypatch)
+    settings.save({updates.SETTING_KEY: "daily"})
+    monkeypatch.setenv("SERAI_UPDATE_CHECK", "off")
+    assert updates.interval() == "off"
+    called = []
+    monkeypatch.setattr(updates, "_fetch_latest", lambda: called.append(1) or {})
+    # even "check now" must not reach the network when the install disabled it
+    st = updates.status(force=True)
+    assert called == [] and st["env_locked"] is True and st["interval"] == "off"
+
+
+def test_update_status_reports_available_and_caches(tmp_path, monkeypatch):
+    _updates_env(tmp_path, monkeypatch)
+    calls = []
+
+    def fake():
+        calls.append(1)
+        return {"latest": "99.0.0", "url": "https://example.invalid/r", "error": None,
+                "no_releases": False}
+
+    monkeypatch.setattr(updates, "_fetch_latest", fake)
+    st = updates.status()                       # never checked -> due
+    assert st["available"] is True and st["latest"] == "99.0.0"
+    assert st["current"] == serai.__version__
+    updates.status()                            # within the interval -> cached
+    assert len(calls) == 1, "a second call inside the interval must not re-poll"
+    updates.status(force=True)                  # "check now" ignores the interval
+    assert len(calls) == 2
+
+
+def test_update_status_survives_an_unreachable_github(tmp_path, monkeypatch):
+    _updates_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(updates, "_fetch_latest",
+                        lambda: {"error": "couldn't reach GitHub (URLError)"})
+    st = updates.status()
+    assert st["available"] is False and st["error"]
+    assert st["current"] == serai.__version__   # still reports what's running
+
+
+def test_update_endpoints_round_trip(tmp_path, monkeypatch):
+    _updates_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(updates, "_fetch_latest",
+                        lambda: {"latest": "99.0.0", "url": None, "error": None,
+                                 "no_releases": False})
+    c = TestClient(app)
+    body = c.get("/api/updates").json()
+    assert body["available"] is True
+    assert c.post("/api/updates/check").json()["latest"] == "99.0.0"

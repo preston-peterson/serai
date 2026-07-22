@@ -2725,9 +2725,92 @@ function openSettings() {
   }
   const fleetCb = document.getElementById("set-fleet");
   if (fleetCb) fleetCb.checked = fleetMode;
+  const updSel = document.getElementById("set-updates");
+  if (updSel) {
+    updSel.value = updateState.interval || UPDATE_DEFAULT;
+    // SERAI_UPDATE_CHECK=off is an install-wide decision; don't pretend the
+    // dropdown can override it
+    updSel.disabled = !!updateState.env_locked;
+  }
+  renderUpdateStatus();
   settingsForm.hidden = false;
 }
 function closeSettings() { settingsForm.hidden = true; }
+
+// --- update check ----------------------------------------------------------
+// The server does the polling (once per instance, cached); this just shows the
+// answer and lets the operator pick a cadence or ask for a check now. The whole
+// notification is a dot on the gear -- no modal on a tool left open for days.
+
+const UPDATE_DEFAULT = "weekly";
+const UPDATE_KEY = "serai.updates.interval";
+let updateState = { interval: UPDATE_DEFAULT };
+
+function fmtAgo(ts) {
+  if (!ts) return "never checked";
+  const secs = Math.max(0, Date.now() / 1000 - ts);
+  if (secs < 90) return "checked just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `checked ${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return `checked ${hrs}h ago`;
+  return `checked ${Math.round(hrs / 24)}d ago`;
+}
+
+function renderUpdateStatus() {
+  const el = document.getElementById("upd-status");
+  const gear = document.getElementById("settings");
+  const s = updateState;
+  if (gear) gear.classList.toggle("has-update", !!s.available);
+  if (!el) return;
+  el.classList.remove("ok", "warn");
+  if (s.env_locked) { el.textContent = "disabled by SERAI_UPDATE_CHECK"; return; }
+  if (s.available) {
+    // link straight to the release notes -- "available" is only useful if you
+    // can see what changed and how to take it
+    el.innerHTML = s.url
+      ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener noreferrer">v${escapeHtml(s.latest)} available</a>`
+      : `v${escapeHtml(s.latest)} available`;
+    el.classList.add("ok");
+  } else if (s.error) {
+    el.textContent = s.error;
+    el.classList.add("warn");
+  } else if (s.no_releases) {
+    el.textContent = "no releases published yet";
+  } else if (s.interval === "off") {
+    el.textContent = "checks are off";
+  } else {
+    el.textContent = `up to date · ${fmtAgo(s.checked_at)}`;
+  }
+}
+
+async function refreshUpdates(force) {
+  try {
+    const res = await fetch(force ? "/api/updates/check" : "/api/updates",
+                            force ? { method: "POST" } : undefined);
+    if (!res.ok) return;
+    updateState = await res.json();
+  } catch { /* offline -- keep whatever we last knew */ }
+  renderUpdateStatus();
+}
+
+document.getElementById("set-updates")?.addEventListener("change", (e) => {
+  const choice = e.target.value;
+  localStorage.setItem(UPDATE_KEY, choice);   // syncs to the server blob
+  updateState.interval = choice;
+  renderUpdateStatus();
+  // a fresh choice should take effect now, not at the next page load
+  setTimeout(() => refreshUpdates(false), 700);
+});
+
+document.getElementById("upd-check")?.addEventListener("click", async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  const el = document.getElementById("upd-status");
+  if (el) { el.classList.remove("ok", "warn"); el.textContent = "checking…"; }
+  await refreshUpdates(true);
+  btn.disabled = false;
+});
 
 function commit(patch) { Object.assign(termSettings, patch); applyTermSettings(); saveTermSettings(); }
 
@@ -2998,6 +3081,9 @@ document.querySelectorAll("#files-cols .col-resize").forEach((h) => {
   restoreFilesHeight();
   restoreSidebarWidth();
   loadSelected(); updateBcastStatus();
+  // fire-and-forget: the server answers from cache unless a check is due, so
+  // this costs nothing on load and paints the gear dot if a release is out
+  refreshUpdates(false);
   // re-read the last-browsed dirs now that pullSettings may have updated them
   // (mirrors the termSettings re-read above), then bring the file pane up
   // BEFORE the session sweep -- listing a dir is fast, probing hosts is not.

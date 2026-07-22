@@ -165,6 +165,12 @@ Preview either script with `--dry-run`. To remove serai, `./uninstall.sh` (keeps
 your config and credentials; `--purge` removes those too). Your tmux sessions are
 never touched.
 
+serai can tell you when a newer release exists: a dot appears on the ⚙ button,
+and the panel links to the release notes. Pick the cadence there — daily, weekly
+(default), monthly, or never. The check runs on the server once per instance and
+is cached, so open tabs cost nothing, and it fails quietly offline. It is the
+only outbound request serai makes; `SERAI_UPDATE_CHECK=off` disables it.
+
 An admin can change the listen address and certificate hostnames later from the
 web UI — account menu → **Network** — without re-running the installer.
 
@@ -208,6 +214,8 @@ Everything below is optional; the defaults are sensible.
 | `SERAI_DONE_WINDOW` | how long a finished Claude session shows as *done* (1800) |
 | `SERAI_WAIT_MARKERS[_CLAUDE\|_SHELL]` | extra phrases that mean "blocked", comma-separated |
 | `SERAI_TMUX_CACHE_TTL` | how long remote session discovery is cached (3s) |
+| `SERAI_UPDATE_CHECK` | `off` disables the update check entirely (it's the only outbound call serai makes) |
+| `SERAI_UPDATE_REPO` | which repo the update check asks about, `owner/name` — for forks |
 | `SERAI_CONFIG_DIR` | where config, credentials, and the cert live |
 
 ## Known rough edges

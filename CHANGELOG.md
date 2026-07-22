@@ -9,6 +9,24 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.15.0]
+
+### Added
+
+- **Update notifications.** serai can check whether a newer release has been
+  published and shows a dot on the ⚙ button when one has. Opening the panel
+  gives the version and a link to its release notes.
+- **An `updates` section in the ⚙ panel** to choose how often that check runs —
+  **daily**, **weekly** (the default), **monthly**, or **never** — plus a
+  **check now** button.
+
+  The check runs on the server, once per instance, and the result is cached and
+  persisted: every open tab polling GitHub independently would hit the
+  unauthenticated rate limit on a tool people leave open for days. It fails
+  quietly when offline, and `SERAI_UPDATE_CHECK=off` disables it install-wide,
+  overriding the panel. Forks can point it at their own repo with
+  `SERAI_UPDATE_REPO=owner/name`.
+
 ## [2.14.2]
 
 ### Changed
