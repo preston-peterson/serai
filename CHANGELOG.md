@@ -9,6 +9,14 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.15.4]
+
+### Fixed
+
+- **Drag-to-scroll on touch was far too fast**, which made it feel chunky and
+  hard to control: the pane moved roughly 4.5x the distance your finger did.
+  Movement now tracks the finger about 1:1, so a drag lands where you expect.
+
 ## [2.15.3]
 
 ### Fixed

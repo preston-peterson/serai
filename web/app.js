@@ -216,6 +216,17 @@ function createPane() {
   // translate a one-finger vertical drag into the wheel events tmux already
   // understands, rather than trying to make the DOM scroll something that isn't
   // there. With mouse mode off tmux ignores the wheel -- exactly as on desktop.
+  // Lines of pane movement per wheel notch we dispatch. tmux nominally scrolls 5
+  // (its default `-N 5` on WheelUp/Down in copy-mode), but xterm's own pixel ->
+  // notch conversion swallows some of that, and the figure below is what was
+  // actually measured end to end against `#{scroll_position}`: four notches move
+  // about fifteen lines. Calibrating from the measurement rather than the
+  // documented default is what makes the drag track the finger (0.9x) instead of
+  // outrunning it -- at one notch per line-height the pane moved ~4.5x the
+  // distance dragged, which is what made it feel chunky and uncontrollable.
+  // Re-measure this if the wheel path changes; the ratio is the whole feel.
+  const LINES_PER_NOTCH = 4;
+
   function enableTouchScroll(pane) {
     const surface = pane.termEl;
     let lastY = null, lastX = null, acc = 0, mode = null;   // mode: "scroll" | "ignore"
@@ -225,6 +236,8 @@ function createPane() {
       const rows = pane.term.rows || 24;
       return Math.max(12, Math.round(((vp && vp.clientHeight) || 480) / rows));
     };
+    // px of drag per wheel notch, so content tracks the finger 1:1
+    const notchDistance = () => Math.max(16, Math.round(lineHeight() * LINES_PER_NOTCH));
 
     surface.addEventListener("touchstart", (ev) => {
       if (ev.touches.length !== 1) { mode = "ignore"; return; }
@@ -245,15 +258,17 @@ function createPane() {
       }
       acc += y - lastY; lastY = y; lastX = x;
 
-      const step = lineHeight();
-      const lines = Math.trunc(acc / step);
-      if (!lines) { ev.preventDefault(); return; }   // still ours: don't let the page move
-      acc -= lines * step;
+      const step = notchDistance();
+      const notches = Math.trunc(acc / step);
+      if (!notches) { ev.preventDefault(); return; }  // still ours: don't let the page move
+      acc -= notches * step;
       const vp = surface.querySelector(".xterm-viewport");
       if (!vp) return;
       // finger down => older output, which is wheel *up* (negative deltaY)
-      const delta = lines > 0 ? -step : step;
-      for (let i = 0; i < Math.min(Math.abs(lines), 12); i++) {
+      const delta = notches > 0 ? -lineHeight() : lineHeight();
+      // A fast flick can cover many notches in one event; cap it so a stray
+      // gesture can't fling the pane through hundreds of lines of history.
+      for (let i = 0; i < Math.min(Math.abs(notches), 4); i++) {
         vp.dispatchEvent(new WheelEvent("wheel", {
           deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true,
         }));
