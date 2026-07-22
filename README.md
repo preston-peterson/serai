@@ -184,6 +184,12 @@ and the panel links to the release notes. Pick the cadence there — daily, week
 is cached, so open tabs cost nothing, and it fails quietly offline. It is the
 only outbound request serai makes; `SERAI_UPDATE_CHECK=off` disables it.
 
+When one is available, an admin gets an **Update now** button that downloads the
+release, verifies its sha256, installs it, and restarts — your terminals
+reconnect on their own because tmux keeps them. It's the same download-verify-
+install path as the one-liner, run from the UI. (Offered only when serai runs as
+a systemd service; from a clone you'd `git pull && ./install.sh`.)
+
 An admin can change the listen address and certificate hostnames later from the
 web UI — account menu → **Network** — without re-running the installer.
 

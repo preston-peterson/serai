@@ -355,6 +355,23 @@ async def api_updates_check() -> JSONResponse:
     return JSONResponse(await loop.run_in_executor(_pool, updates.status, True))
 
 
+@app.post("/api/updates/apply")
+async def api_updates_apply(request: Request) -> JSONResponse:
+    """Download the latest release, verify its sha256, install it, and restart.
+
+    Admin only -- this is the one endpoint that runs the installer over the
+    running code (invariant #3: the command is argv-built from our own paths and
+    a GitHub-supplied tag validated against a version regex; nothing from the
+    request reaches it). Runs off the event loop; on success the service
+    restarts and the UI's version-change detector prompts a reload."""
+    sess = _session(request)
+    if not (sess and sess["admin"]):
+        return JSONResponse({"error": "admin required"}, status_code=403)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(_pool, updates.apply)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 409)
+
+
 @app.get("/api/hosts")
 async def api_hosts() -> JSONResponse:
     """List ssh-config hosts, each tagged with current `reachable` state.

@@ -2922,6 +2922,24 @@ function renderUpdateStatus() {
   } else {
     el.textContent = `up to date · ${fmtAgo(s.checked_at)}`;
   }
+  renderApplyRow();
+}
+
+// The one-click updater. Shown only when an update is available AND the caller
+// is an admin AND the server says this install can replace itself (a systemd
+// unit -- a dev checkout or `./run.sh` can't). When it can't self-update, the
+// release-notes link above still tells the admin what to do by hand.
+function renderApplyRow() {
+  const row = document.getElementById("upd-apply-row");
+  const note = document.getElementById("upd-apply-note");
+  if (!row) return;
+  const s = updateState;
+  const canShow = !!s.available && !!(authStatus && authStatus.admin) && !!s.can_apply;
+  row.hidden = !canShow;
+  if (canShow && note && !note.dataset.busy) {
+    note.classList.remove("warn");
+    note.textContent = "installs it and restarts";
+  }
 }
 
 async function refreshUpdates(force) {
@@ -2953,6 +2971,36 @@ document.getElementById("upd-check")?.addEventListener("click", async (e) => {
   if (el) { el.classList.remove("ok", "warn"); el.textContent = "checking…"; }
   await refreshUpdates(true);
   btn.disabled = false;
+});
+
+document.getElementById("upd-apply")?.addEventListener("click", async (e) => {
+  const btn = e.target;
+  const note = document.getElementById("upd-apply-note");
+  const ver = updateState.latest;
+  if (!confirm(`Update serai to v${ver}? This installs it and restarts the ` +
+               `server — your terminals reconnect on their own (tmux keeps them).`)) return;
+  btn.disabled = true;
+  document.getElementById("upd-check")?.setAttribute("disabled", "true");
+  if (note) { note.dataset.busy = "1"; note.classList.remove("warn"); note.textContent = "downloading & installing…"; }
+  try {
+    const res = await fetch("/api/updates/apply", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body.ok) {
+      // The server is restarting. trackServerVersion() will see the new
+      // X-Serai-Version on the next gated response and prompt a reload; say so.
+      if (note) { note.textContent = `installing v${body.to_version} — the page will offer to reload`; }
+    } else {
+      if (note) { note.classList.add("warn"); note.textContent = body.error || "update failed"; }
+      btn.disabled = false;
+      document.getElementById("upd-check")?.removeAttribute("disabled");
+    }
+  } catch {
+    // A dropped connection mid-restart is the SUCCESS shape, not a failure:
+    // systemd tore the old process down before the response flushed.
+    if (note) { note.textContent = "restarting — the page will offer to reload"; }
+  } finally {
+    if (note) delete note.dataset.busy;
+  }
 });
 
 function commit(patch) { Object.assign(termSettings, patch); applyTermSettings(); saveTermSettings(); }

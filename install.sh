@@ -49,6 +49,7 @@ ARG_PREFIX=""
 MODE="user"
 DRY=false
 DETECT_ONLY=false
+NO_RESTART=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,6 +63,7 @@ while [ $# -gt 0 ]; do
         --prefix=*) ARG_PREFIX="${1#*=}"; shift ;;
         --system) MODE="system"; shift ;;
         -n|--dry-run) DRY=true; shift ;;
+        --no-restart) NO_RESTART=true; shift ;;  # copy + deps, but leave the restart to the caller
         --detect-only) DETECT_ONLY=true; shift ;;  # print backend-changed|frontend-only, change nothing
         -h|--help)
             cat <<'EOF'
@@ -80,6 +82,9 @@ Usage:
                                      serai, or /opt/serai with --system)
   ./install.sh --dry-run             show exactly what it would write/run and
                                      change nothing (safe to test with)
+  ./install.sh --no-restart          copy files + deps but don't restart the
+                                     service (the web UI's self-update uses this,
+                                     then restarts itself)
   ./install.sh --help
 
 serai is COPIED to its install location (out of your source/git checkout) and
@@ -336,9 +341,16 @@ echo -e "${CYAN}[4/5]${RESET} Starting serai..."
 if $DRY; then
     echo -e "  ${YELLOW}(dry-run)${RESET} would: ${SYSTEMCTL} enable serai.service; then restart it"
     echo -e "  ${YELLOW}(dry-run)${RESET} (frontend-only changes skip the restart to keep live sessions)"
+    $NO_RESTART && echo -e "  ${YELLOW}(dry-run)${RESET} --no-restart: would copy + install deps but leave the restart to the caller"
 else
     $SYSTEMCTL enable serai.service >/dev/null 2>&1 || true
-    if ! $BACKEND_CHANGED && $SYSTEMCTL is-active --quiet serai.service; then
+    if $NO_RESTART; then
+        # The web UI's "Update now" runs install.sh as a child of the serai
+        # service; restarting here would kill this process mid-copy. The caller
+        # copies first, then restarts itself last. Report which it needs to do.
+        $BACKEND_CHANGED && echo -e "  ${GREEN}✓${RESET} files updated — caller will restart (backend changed)" \
+                         || echo -e "  ${GREEN}✓${RESET} files updated — no restart needed (frontend-only)"
+    elif ! $BACKEND_CHANGED && $SYSTEMCTL is-active --quiet serai.service; then
         # only web/ (or docs) changed: the running process serves the new files
         # as-is (no-cache), so keep every live websocket attached
         echo -e "  ${GREEN}✓${RESET} frontend-only change — restart skipped, live sessions kept"

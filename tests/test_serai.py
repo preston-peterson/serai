@@ -1908,3 +1908,181 @@ def test_scroll_argv_actually_scrolls_a_pane(tmp_path):
     finally:
         tmux("kill-server")
         shutil.rmtree(sock, ignore_errors=True)
+
+
+# --- self-update apply -----------------------------------------------------
+# The apply path downloads a release, verifies its sha256, and re-runs
+# install.sh over the running install, then restarts. The network + the
+# installer are stubbed; what is tested is the ordering, the verification
+# refusal, and that nothing user/GitHub-supplied reaches a command unchecked.
+
+def _build_release(tmp_path, ver="99.0.0"):
+    """A real gzip tarball shaped like release.sh's output, plus a matching
+    checksums file. Returns (tarball_bytes, sums_text, sha)."""
+    import io, gzip, tarfile as _tf, hashlib as _hl
+    buf = io.BytesIO()
+    with _tf.open(fileobj=buf, mode="w:gz") as tar:
+        for name in ("install.sh", "serai/__init__.py", "pyproject.toml"):
+            data = f"# {name} for {ver}\n".encode()
+            info = _tf.TarInfo(f"serai-{ver}/{name}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    raw = buf.getvalue()
+    sha = _hl.sha256(raw).hexdigest()
+    sums = f"{sha}  serai_{ver}.tar.gz\n"
+    return raw, sums, sha
+
+
+def _stub_apply(monkeypatch, updates_mod, tarball, sums, *, service="user",
+                installer_rc=0, restart_ok=True):
+    """Wire updates.apply() to a fake release + fake installer + fake restart."""
+    ver = "99.0.0"
+    monkeypatch.setattr(updates_mod, "status",
+                        lambda force=False: {"latest": ver, "available": True,
+                                             "current": "1.0.0"})
+    monkeypatch.setattr(updates_mod.netcfg, "service_mode", lambda: service)
+    monkeypatch.setattr(updates_mod.netcfg, "restart",
+                        lambda: {"ok": restart_ok, "mode": service,
+                                 "reason": "" if restart_ok else "boom"})
+
+    def fake_download(url, dest):
+        if url.endswith(".tar.gz"):
+            dest.write_bytes(tarball)
+        else:
+            dest.write_text(sums)
+    monkeypatch.setattr(updates_mod, "_download", fake_download)
+
+    calls = {}
+    def fake_run(cmd, **kw):
+        # apply() probes `install.sh --help` for --no-restart support first;
+        # report it so the modern (suppress-then-restart) path is exercised.
+        if "--help" in cmd:
+            return SimpleNamespace(returncode=0, stdout="--no-restart\n", stderr="")
+        calls["cmd"] = cmd
+        calls["cwd"] = kw.get("cwd")
+        return SimpleNamespace(returncode=installer_rc, stdout="", stderr="boom")
+    monkeypatch.setattr(updates_mod.subprocess, "run", fake_run)
+    return calls
+
+
+def test_update_apply_happy_path(tmp_path, monkeypatch):
+    from serai import updates as U
+    tarball, sums, _ = _build_release(tmp_path)
+    calls = _stub_apply(monkeypatch, U, tarball, sums)
+    res = U.apply()
+    assert res["ok"] is True and res["to_version"] == "99.0.0"
+    # install.sh was invoked with --no-restart and our own prefix, no shell
+    assert calls["cmd"][0] == "bash" and calls["cmd"][-1] == "--no-restart"
+    assert "--prefix" in calls["cmd"]
+    assert "--system" not in calls["cmd"]           # user unit
+
+
+def test_update_apply_refuses_on_checksum_mismatch(tmp_path, monkeypatch):
+    from serai import updates as U
+    tarball, sums, _ = _build_release(tmp_path)
+    bad_sums = "0" * 64 + "  serai_99.0.0.tar.gz\n"   # wrong digest
+    calls = _stub_apply(monkeypatch, U, tarball, bad_sums)
+    res = U.apply()
+    assert res["ok"] is False and res["stage"] == "verify"
+    assert "cmd" not in calls, "installer must not run on a bad checksum"
+
+
+def test_update_apply_refuses_when_sums_missing_the_file(tmp_path, monkeypatch):
+    # `sha256sum -c` with no matching line exits happy; we must not.
+    from serai import updates as U
+    tarball, _, _ = _build_release(tmp_path)
+    calls = _stub_apply(monkeypatch, U, tarball, "deadbeef  some_other_file\n")
+    res = U.apply()
+    assert res["ok"] is False and res["stage"] == "verify"
+    assert "cmd" not in calls
+
+
+def test_update_apply_passes_system_flag_for_system_unit(tmp_path, monkeypatch):
+    from serai import updates as U
+    tarball, sums, _ = _build_release(tmp_path)
+    calls = _stub_apply(monkeypatch, U, tarball, sums, service="system")
+    res = U.apply()
+    assert res["ok"] is True
+    assert "--system" in calls["cmd"]
+
+
+def test_update_apply_reports_installer_failure(tmp_path, monkeypatch):
+    from serai import updates as U
+    tarball, sums, _ = _build_release(tmp_path)
+    _stub_apply(monkeypatch, U, tarball, sums, installer_rc=1)
+    res = U.apply()
+    assert res["ok"] is False and res["stage"] == "install"
+
+
+def test_update_apply_refuses_without_a_service(tmp_path, monkeypatch):
+    from serai import updates as U
+    monkeypatch.setattr(U.netcfg, "service_mode", lambda: None)
+    monkeypatch.setattr(U, "status",
+                        lambda force=False: {"latest": "99.0.0", "available": True})
+    res = U.apply()
+    assert res["ok"] is False and res["stage"] == "capability"
+
+
+def test_update_apply_rejects_a_suspicious_tag(tmp_path, monkeypatch):
+    from serai import updates as U
+    monkeypatch.setattr(U.netcfg, "service_mode", lambda: "user")
+    monkeypatch.setattr(U, "status",
+                        lambda force=False: {"latest": "1.0.0; rm -rf ~", "available": True})
+    res = U.apply()
+    assert res["ok"] is False and res["stage"] == "resolve"
+
+
+def test_update_apply_endpoint_is_admin_only(tmp_path, monkeypatch):
+    _updates_env(tmp_path, monkeypatch)
+    c = TestClient(app)
+    # the autouse _auth_off fixture makes _session return an admin; force non-admin
+    monkeypatch.setattr("serai.main._session",
+                        lambda req: {"username": "bob", "admin": False})
+    assert c.post("/api/updates/apply").status_code == 403
+
+
+def test_update_apply_rejects_a_traversal_tarball(tmp_path, monkeypatch):
+    """A tarball entry outside serai-<ver>/ is refused before extraction lands
+    anything -- defence in depth even though we build the tarball ourselves."""
+    import io, tarfile as _tf, hashlib as _hl
+    from serai import updates as U
+    buf = io.BytesIO()
+    with _tf.open(fileobj=buf, mode="w:gz") as tar:
+        data = b"pwned\n"
+        info = _tf.TarInfo("../../etc/evil")          # escapes the prefix
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    raw = buf.getvalue()
+    sums = f"{_hl.sha256(raw).hexdigest()}  serai_99.0.0.tar.gz\n"
+    calls = _stub_apply(monkeypatch, U, raw, sums)
+    res = U.apply()
+    assert res["ok"] is False and res["stage"] == "extract"
+    assert "cmd" not in calls
+
+
+def test_update_apply_falls_back_for_a_legacy_installer(tmp_path, monkeypatch):
+    """A release whose install.sh predates --no-restart: run without the flag,
+    let that installer restart itself, and report success without our restart."""
+    from serai import updates as U
+    tarball, sums, _ = _build_release(tmp_path)
+    ver = "99.0.0"
+    monkeypatch.setattr(U, "status",
+                        lambda force=False: {"latest": ver, "available": True, "current": "1.0.0"})
+    monkeypatch.setattr(U.netcfg, "service_mode", lambda: "user")
+    restart_called = {"n": 0}
+    monkeypatch.setattr(U.netcfg, "restart",
+                        lambda: restart_called.__setitem__("n", restart_called["n"] + 1) or {"ok": True})
+    def fake_download(url, dest):
+        dest.write_bytes(tarball) if url.endswith(".tar.gz") else dest.write_text(sums)
+    monkeypatch.setattr(U, "_download", fake_download)
+    seen = {}
+    def fake_run(cmd, **kw):
+        if "--help" in cmd:
+            return SimpleNamespace(returncode=0, stdout="usage: no such flag", stderr="")
+        seen["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(U.subprocess, "run", fake_run)
+    res = U.apply()
+    assert res["ok"] is True and res["restart"].get("self") is True
+    assert "--no-restart" not in seen["cmd"], "legacy installer must not get the flag"
+    assert restart_called["n"] == 0, "we must not double-restart a self-restarting installer"

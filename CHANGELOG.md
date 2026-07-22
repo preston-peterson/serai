@@ -9,6 +9,20 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.17.0]
+
+### Added
+
+- **One-click "Update now"** in the ⚙ panel. When a newer release exists, an
+  admin sees a button that downloads it, verifies its sha256, installs it, and
+  restarts — your terminals reconnect on their own because tmux keeps them.
+
+  It's the same path as a manual upgrade: download → verify → `install.sh`, run
+  server-side. Admin-only, and shown only when the install can restart itself (a
+  systemd unit); a dev checkout or `./run.sh` still shows the release-notes link
+  to update by hand. Nothing from the request reaches the command, and the
+  download is refused on any checksum mismatch.
+
 ## [2.16.0]
 
 ### Changed
