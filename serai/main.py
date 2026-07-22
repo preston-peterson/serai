@@ -823,6 +823,7 @@ async def ws_attach(ws: WebSocket) -> None:
                 os.write(master_fd, msg["bytes"])
             elif msg.get("text") is not None:
                 # control frames: {"resize": {"rows": R, "cols": C}}
+                #                 {"scroll": {"lines": N}}   (+ back, - forward)
                 try:
                     payload = json.loads(msg["text"])
                 except ValueError:
@@ -830,6 +831,21 @@ async def ws_attach(ws: WebSocket) -> None:
                 resize = payload.get("resize")
                 if resize:
                     _set_winsize(master_fd, int(resize["rows"]), int(resize["cols"]))
+                scroll = payload.get("scroll")
+                if scroll:
+                    # Touch drag -> an exact line count, which the wheel can't
+                    # express (it lands on ~4-line notches). Runs off-loop: a
+                    # slow tmux or ssh must not stall the PTY pump feeding the
+                    # terminal. Best effort -- a dropped scroll is a lost gesture,
+                    # never a broken session.
+                    try:
+                        lines = int(scroll.get("lines", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if lines:
+                        loop.run_in_executor(
+                            _pool, sessions.run_send,
+                            sessions.scroll_argv(host, name, lines))
     except WebSocketDisconnect:
         pass
     finally:

@@ -522,6 +522,32 @@ def set_dir_argv(host: str, name: str, path: str) -> list[str]:
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
 
 
+def scroll_argv(host: str, name: str, lines: int) -> list[str]:
+    """Command that scrolls a session's pane by ``lines`` (positive = back into
+    history, negative = toward live output).
+
+    Why this exists rather than sending a wheel event: the wheel is quantised at
+    roughly four lines per notch by the time it has been through xterm and tmux's
+    default binding, which on a phone reads as a lurch. ``send-keys -X -N`` takes
+    an exact count, so a drag can move one line at a time.
+
+    ``copy-mode -e`` first because ``-X`` commands only apply in copy mode; ``-e``
+    also makes tmux leave copy mode by itself once you scroll back to the bottom,
+    so the pane returns to live output without a separate exit.
+
+    ``lines`` is coerced to a bounded int by the caller *and* here -- it is the
+    only part of this command that isn't a literal, and it must never reach the
+    shell as anything but a number (invariant #3).
+    """
+    count = max(1, min(int(abs(lines)), 500))
+    verb = "scroll-up" if lines > 0 else "scroll-down"
+    tmux_cmd = ["tmux", "copy-mode", "-e", "-t", name, ";",
+                "send-keys", "-t", name, "-X", "-N", str(count), verb]
+    if host == "local":
+        return tmux_cmd
+    return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
+
+
 def clean_dir(path: str) -> str:
     """Normalise a user-supplied start dir, or "" to clear it.
 

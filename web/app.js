@@ -239,6 +239,26 @@ function createPane() {
     // px of drag per wheel notch, so content tracks the finger 1:1
     const notchDistance = () => Math.max(16, Math.round(lineHeight() * LINES_PER_NOTCH));
 
+    // Coalesce the line count and send at most one frame per SCROLL_MS. Without
+    // this a fast drag would queue a command per touchmove, and over ssh they
+    // would still be arriving after the finger stopped -- the pane would coast
+    // past where you let go.
+    let pendingLines = 0, scrollTimer = null, lastSent = 0;
+    const SCROLL_MS = 55;
+    function flushScroll() {
+      if (scrollTimer) return;
+      const wait = Math.max(0, SCROLL_MS - (Date.now() - lastSent));
+      scrollTimer = setTimeout(() => {
+        scrollTimer = null;
+        const lines = pendingLines; pendingLines = 0;
+        if (!lines) return;
+        lastSent = Date.now();
+        try {
+          pane.ws.send(JSON.stringify({ scroll: { lines } }));
+        } catch { /* socket went away mid-gesture -- the drag just stops */ }
+      }, wait);
+    }
+
     surface.addEventListener("touchstart", (ev) => {
       if (ev.touches.length !== 1) { mode = "ignore"; return; }
       lastY = ev.touches[0].clientY; lastX = ev.touches[0].clientX;
@@ -258,9 +278,25 @@ function createPane() {
       }
       acc += y - lastY; lastY = y; lastX = x;
 
+      ev.preventDefault();     // stop the page rubber-banding under the terminal
+
+      // Preferred path: ask tmux to scroll an exact number of lines, over the
+      // socket that is already open. One line of travel moves one line of pane,
+      // which is as fine as tmux goes -- the wheel below can only land on
+      // ~4-line notches, which is what made this lurch.
+      if (pane.ws && pane.ws.readyState === WebSocket.OPEN) {
+        const lines = Math.trunc(acc / lineHeight());
+        if (!lines) return;
+        acc -= lines * lineHeight();
+        pendingLines += lines;                      // finger down (+) => back in history
+        flushScroll();
+        return;
+      }
+
+      // Fallback (socket not up): the wheel, calibrated to track the finger.
       const step = notchDistance();
       const notches = Math.trunc(acc / step);
-      if (!notches) { ev.preventDefault(); return; }  // still ours: don't let the page move
+      if (!notches) return;
       acc -= notches * step;
       const vp = surface.querySelector(".xterm-viewport");
       if (!vp) return;
@@ -273,7 +309,6 @@ function createPane() {
           deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true,
         }));
       }
-      ev.preventDefault();     // stop the page rubber-banding under the terminal
     }, { passive: false });
 
     const end = () => { lastY = lastX = null; acc = 0; mode = null; };

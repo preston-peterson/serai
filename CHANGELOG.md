@@ -9,6 +9,19 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.16.0]
+
+### Changed
+
+- **Drag-to-scroll on touch is now line-by-line.** It previously rode the mouse
+  wheel, which is quantised at about four lines per notch, so the pane arrived in
+  visible jumps. A drag now asks tmux to scroll an exact number of lines over the
+  websocket that is already open, giving single-line steps — four times finer —
+  while still tracking your finger about 1:1.
+
+  Falls back to the wheel if the socket isn't up. Horizontal drags are still left
+  alone, so selecting text works.
+
 ## [2.15.4]
 
 ### Fixed

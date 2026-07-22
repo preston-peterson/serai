@@ -1839,3 +1839,72 @@ def test_update_interval_survives_a_save_from_an_unaware_tab(tmp_path, monkeypat
     assert updates.interval() == "daily"
     c.put("/api/settings", json={"serai.term.size": "15"})     # an older tab saves
     assert updates.interval() == "daily", "the cadence reverted to the default"
+
+
+# --- scroll_argv -----------------------------------------------------------
+# Touch drag -> an exact line count. The wheel can only land on ~4-line notches
+# (xterm's pixel->notch conversion on top of tmux's default -N 5), which on a
+# phone reads as a lurch; `send-keys -X -N` takes the count directly.
+
+def test_scroll_argv_is_argv_shaped_and_directional():
+    up = sessions.scroll_argv("local", "shell-x", 7)
+    assert up == ["tmux", "copy-mode", "-e", "-t", "shell-x", ";",
+                  "send-keys", "-t", "shell-x", "-X", "-N", "7", "scroll-up"]
+    # negative walks back toward live output
+    assert sessions.scroll_argv("local", "shell-x", -3)[-1] == "scroll-down"
+    assert sessions.scroll_argv("local", "shell-x", -3)[-2] == "3"   # count is magnitude
+
+
+def test_scroll_argv_clamps_the_count():
+    # the count is the only non-literal in the command; a flick must not turn
+    # into an unbounded -N
+    assert sessions.scroll_argv("local", "s", 10 ** 9)[-2] == "500"
+    assert sessions.scroll_argv("local", "s", 0)[-2] == "1"
+
+
+def test_scroll_argv_never_interpolates_a_session_name(tmp_path):
+    """Invariant #3: a hostile name stays one argv element, local and remote."""
+    evil = "; rm -rf ~"
+    local = sessions.scroll_argv("local", evil, 2)
+    assert evil in local                       # present, as a single element
+    assert not any(a.startswith("rm") for a in local)
+    remote = sessions.scroll_argv("web-01", evil, 2)
+    assert remote[0] == "ssh"
+    # the remote side is one quoted string -- the name must be escaped inside it
+    assert shlex.quote(evil) in remote[-1]
+
+
+@requires_tmux
+def test_scroll_argv_actually_scrolls_a_pane(tmp_path):
+    """End to end against real tmux: exact line counts, and -N walks back out."""
+    sock = tempfile.mkdtemp(prefix="serai-sc-", dir="/tmp")   # short: sockets are length-capped
+    env = {**os.environ, "TMUX_TMPDIR": sock}
+    env.pop("TMUX", None); env.pop("TMUX_PANE", None)         # never touch the real server
+    name = "shell-serai-pytest-scroll"
+
+    def tmux(*args, **kw):
+        return subprocess.run(["tmux", *args], env=env, capture_output=True, text=True, **kw)
+
+    try:
+        tmux("new-session", "-d", "-s", name, "-x", "80", "-y", "24")
+        tmux("send-keys", "-t", name,
+             'for i in $(seq 1 200); do echo "line $i"; done', "Enter")
+        time.sleep(1.2)
+
+        def pos():
+            r = tmux("display-message", "-p", "-t", name, "#{scroll_position}")
+            return r.stdout.strip()
+
+        monkey = sessions.scroll_argv("local", name, 7)
+        subprocess.run(monkey, env=env, capture_output=True, timeout=6)
+        assert pos() == "7", "an exact 7-line scroll is the whole point"
+        subprocess.run(sessions.scroll_argv("local", name, 1), env=env,
+                       capture_output=True, timeout=6)
+        assert pos() == "8", "single-line granularity -- finer than any wheel notch"
+        subprocess.run(sessions.scroll_argv("local", name, -50), env=env,
+                       capture_output=True, timeout=6)
+        r = tmux("display-message", "-p", "-t", name, "#{pane_in_mode}")
+        assert r.stdout.strip() == "0", "scrolling back to the bottom leaves copy mode"
+    finally:
+        tmux("kill-server")
+        shutil.rmtree(sock, ignore_errors=True)
