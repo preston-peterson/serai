@@ -141,6 +141,19 @@ Keys come from your ssh-agent (`ssh-add -l` to check). Python ≥3.10. The web U
 
 ## Run as a service
 
+One line on a fresh box:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/preston-peterson/serai/main/get.sh)
+```
+
+That checks the machine can run serai, downloads the latest release, **verifies
+it against the release's published sha256** — refusing to continue if it doesn't
+match — and hands off to the installer. Any flags go straight through, e.g.
+`bash <(curl -fsSL …/get.sh) --hostname serai.lan --system`.
+
+Or from a clone:
+
 ```bash
 ./install.sh                                 # interactive: asks how you'll reach serai
 ./install.sh --hostname serai.lan,192.0.2.5  # or set it up front
