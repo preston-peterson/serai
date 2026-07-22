@@ -9,6 +9,14 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+### Added
+
+- **Releases now carry a verifiable source tarball.** Each release attaches
+  `serai_<version>.tar.gz` and `serai_<version>_checksums.txt`, so a download can
+  be checked with `sha256sum -c serai_<version>_checksums.txt` before you run
+  anything. The tarball is built from the tag and is reproducible — rebuilding
+  the same tag yields identical bytes.
+
 ## [2.15.0]
 
 ### Added
