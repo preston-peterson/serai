@@ -9,6 +9,14 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.15.1]
+
+### Fixed
+
+- `HEAD /` and `HEAD /favicon.ico` returned **405 Method Not Allowed** while
+  `GET` returned 200. Uptime monitors commonly probe with `HEAD` and would read
+  a healthy serai as down.
+
 ### Added
 
 - **Releases now carry a verifiable source tarball.** Each release attaches

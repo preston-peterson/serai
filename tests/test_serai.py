@@ -1787,3 +1787,17 @@ def test_update_endpoints_round_trip(tmp_path, monkeypatch):
     body = c.get("/api/updates").json()
     assert body["available"] is True
     assert c.post("/api/updates/check").json()["latest"] == "99.0.0"
+
+
+def test_head_on_the_ui_routes_matches_get():
+    # Uptime monitors probe with HEAD. FastAPI's @app.get registers GET only
+    # (a plain Starlette route would add HEAD), so these answered 405 while GET
+    # answered 200 -- indistinguishable from an outage to a monitor.
+    c = TestClient(app)
+    for path in ("/", "/favicon.ico"):
+        get_r, head_r = c.get(path), c.head(path)
+        assert get_r.status_code == 200, path
+        assert head_r.status_code == 200, f"HEAD {path} -> {head_r.status_code}"
+        # a HEAD reply carries the headers of the GET but no body
+        assert head_r.headers.get("content-type") == get_r.headers.get("content-type")
+        assert head_r.content == b""

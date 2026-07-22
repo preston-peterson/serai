@@ -119,12 +119,15 @@ def _known_hosts() -> set[str]:
 
 # --- static UI -------------------------------------------------------------
 
-@app.get("/")
+# GET *and* HEAD: FastAPI's @app.get registers GET alone, unlike a plain
+# Starlette route, so HEAD / answered 405 while GET / answered 200. Uptime
+# monitors habitually probe with HEAD and would read that as an outage.
+@app.api_route("/", methods=["GET", "HEAD"])
 async def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
 
 
-@app.get("/favicon.ico")
+@app.api_route("/favicon.ico", methods=["GET", "HEAD"])
 async def favicon() -> FileResponse:
     return FileResponse(WEB_DIR / "favicon.svg", media_type="image/svg+xml")
 
