@@ -337,13 +337,20 @@ def _apply_locked() -> dict:
             return {"ok": False, "stage": "verify",
                     "error": "sha256 mismatch -- refusing to install"}
 
-        # Extract the source tree from the verified tarball.
+        # Extract the source tree from the verified tarball. _safe_members already
+        # rejects traversal/symlink entries; also pass the stdlib "data" filter
+        # where available (3.12+) as belt-and-braces and to silence 3.14's
+        # deprecation of the unfiltered default.
         extract_root = tmpd / "src"
         extract_root.mkdir()
         try:
             with tarfile.open(tarball, "r:gz") as tar:
                 top = f"serai-{ver}"
-                tar.extractall(extract_root, members=_safe_members(tar, top))
+                members = list(_safe_members(tar, top))
+                try:
+                    tar.extractall(extract_root, members=members, filter="data")
+                except TypeError:
+                    tar.extractall(extract_root, members=members)  # Python < 3.12
         except (tarfile.TarError, ValueError, OSError) as exc:
             return {"ok": False, "stage": "extract", "error": f"bad tarball: {exc}"}
         src = extract_root / f"serai-{ver}"

@@ -1889,7 +1889,22 @@ def test_scroll_argv_actually_scrolls_a_pane(tmp_path):
         tmux("new-session", "-d", "-s", name, "-x", "80", "-y", "24")
         tmux("send-keys", "-t", name,
              'for i in $(seq 1 200); do echo "line $i"; done', "Enter")
-        time.sleep(1.2)
+
+        def hist():
+            r = tmux("display-message", "-p", "-t", name, "#{history_size}")
+            try:
+                return int(r.stdout.strip())
+            except ValueError:
+                return 0
+
+        # Wait for the scrollback to actually exist rather than sleeping a fixed
+        # time -- a loaded CI runner can still be printing the loop at 1.2s, and
+        # there is nothing to scroll until it has (this flaked on 3.12).
+        for _ in range(50):
+            if hist() >= 100:
+                break
+            time.sleep(0.2)
+        assert hist() >= 100, "shell loop never produced scrollback to test against"
 
         def pos():
             r = tmux("display-message", "-p", "-t", name, "#{scroll_position}")
