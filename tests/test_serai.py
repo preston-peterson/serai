@@ -803,7 +803,7 @@ def test_set_dir_argv_and_clean_dir():
 def test_start_dir_parsed_from_listing(monkeypatch):
     # @serai_dir rides the listing next to the live cwd; both reach the Session
     now = int(time.time())
-    listing = f"shell-x::0::{now}::prod::bash::~/git/proj::/home/u/elsewhere\n"
+    listing = f"shell-x::0::{now}::prod::bash::0::~/git/proj::/home/u/elsewhere\n"
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
             return listing
@@ -870,11 +870,11 @@ def test_state_and_tail_from_listing(monkeypatch):
     now = int(time.time())
     listing = (
         # name::attached::activity::tags::command::@serai_dir::path (dir empty here)
-        f"cc-working::0::{now}::::node::::/home/u/app\n"        # "esc to interrupt" -> working
-        f"cc-recent::0::{now - 60}::::node::::/home/u/app\n"    # parked at prompt, recent -> done
-        f"cc-stale::0::{now - 99999}::::node::::/home/u/app\n"  # dormant cc -> idle
-        f"shell-run::0::{now - 99999}::::npm::::/home/u/app\n"  # process running -> working
-        f"shell-idle::0::{now - 99999}::::bash::::/home/u/app\n"# quiet shell at prompt -> idle
+        f"cc-working::0::{now}::::node::0::::/home/u/app\n"        # "esc to interrupt" -> working
+        f"cc-recent::0::{now - 60}::::node::0::::/home/u/app\n"    # parked at prompt, recent -> done
+        f"cc-stale::0::{now - 99999}::::node::0::::/home/u/app\n"  # dormant cc -> idle
+        f"shell-run::0::{now - 99999}::::npm::0::::/home/u/app\n"  # process running -> working
+        f"shell-idle::0::{now - 99999}::::bash::0::::/home/u/app\n"# quiet shell at prompt -> idle
     )
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
@@ -2170,3 +2170,22 @@ def test_installer_unit_sets_killmode_process():
     assert "KillMode=process" in out.stdout
     assert "KillMode=control-group" not in out.stdout.replace(
         "default KillMode=control-group", "")   # ignore the explanatory comment
+
+
+def test_alternate_screen_flag_parsed_without_shifting_the_path(monkeypatch):
+    """`alt` marks a full-screen app (Claude's TUI, vim, less). Those panes have
+    NO tmux scrollback, so the client must scroll them with the wheel (the app
+    scrolls itself) instead of tmux copy-mode, which there is a no-op. The path
+    stays the LAST field, so adding this must not shift it."""
+    now = int(time.time())
+    listing = (f"shell-tui::0::{now}::prod::less::1::~/git/proj::/home/u/app\n"
+               f"shell-plain::0::{now}::::bash::0::~/git/proj::/home/u/app\n")
+    monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6:
+                        listing if "list-sessions" in argv else "")
+    by = {s.name: s for s in sessions._list_sessions_uncached("local")}
+    assert by["shell-tui"].alt is True
+    assert by["shell-plain"].alt is False
+    # the path (last field) must still land in `path`, not in `dir`
+    assert by["shell-tui"].path == "/home/u/app"
+    assert by["shell-tui"].dir == "~/git/proj"
+    assert by["shell-tui"].as_dict()["alt"] is True     # reaches the client

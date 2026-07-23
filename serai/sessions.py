@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, asdict
 # field is our per-session tags, stored as a tmux user option (@serai_tags) so
 # they persist in the session itself with no external store (invariants #1/#4).
 _FMT = ("#{session_name}::#{session_attached}::#{session_activity}::#{@serai_tags}"
-        "::#{pane_current_command}::#{@serai_dir}::#{pane_current_path}")
+        "::#{pane_current_command}::#{alternate_on}::#{@serai_dir}::#{pane_current_path}")
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new"]
 
 # Per-host TTL cache around remote session discovery. Local discovery is cheap
@@ -108,6 +108,9 @@ class Session:
     dir: str = ""        # configured "start in" dir (@serai_dir); "" if unset
     tail: str = ""       # short preview of the pane's last lines (for board cards)
     age: float = -1.0    # seconds since the session last saw activity (-1 = unknown)
+    alt: bool = False    # pane is on the alternate screen (a full-screen TUI):
+                         # no tmux scrollback exists, so scrolling must go to the
+                         # app via the wheel rather than to tmux's copy-mode
 
     @property
     def id(self) -> str:
@@ -274,7 +277,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
 
     sessions: list[Session] = []
     for line in out.splitlines():
-        parts = line.split("::", 6)  # bounded split: the path (last) may contain "::"
+        parts = line.split("::", 7)  # bounded split: the path (last) may contain "::"
         if len(parts) < 2:
             continue
         name, attached_flag = parts[0], parts[1]
@@ -282,8 +285,13 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         activity = parts[2] if len(parts) > 2 else ""
         tags = clean_tags((parts[3] if len(parts) > 3 else "").split(","))
         command = parts[4] if len(parts) > 4 else ""
-        start_dir = parts[5] if len(parts) > 5 else ""
-        path = parts[6] if len(parts) > 6 else ""
+        # A full-screen app (claude's TUI, vim, less) runs on the alternate
+        # screen, which by design has NO tmux scrollback -- so asking tmux to
+        # scroll its history there moves nothing. The client uses this to pick
+        # the scroll path: wheel (the app scrolls itself) vs exact tmux lines.
+        alt = (parts[5] if len(parts) > 5 else "").strip() == "1"
+        start_dir = parts[6] if len(parts) > 6 else ""
+        path = parts[7] if len(parts) > 7 else ""
         kind, label = _classify(name)
         lines = _capture_lines(host, name)
         # Markers only care about the recent tail; the preview wants more history
@@ -297,7 +305,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         sessions.append(
             Session(host=host, name=name, kind=kind, label=label, state=state,
                     attached=attached, tags=tags, path=path, dir=start_dir,
-                    tail=_preview(lines),
+                    tail=_preview(lines), alt=alt,
                     age=(round(secs) if secs is not None else -1.0))
         )
     return sessions

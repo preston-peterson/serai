@@ -9,6 +9,21 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.17.2]
+
+### Fixed
+
+- **Mobile scrolling did nothing in a Claude Code session.** A regression from
+  2.16.0: that release started scrolling via tmux's own history, which is exact
+  and smooth — but a full-screen app (Claude's TUI, vim, less) runs on the
+  *alternate screen*, which by design has **no tmux scrollback at all**. The
+  scroll command ran, entered copy mode, and moved nothing.
+
+  serai now detects an alternate-screen pane and scrolls it the way a desktop
+  wheel does — the app scrolls its own view. Plain shells keep the exact
+  line-by-line tmux scrolling from 2.16.0, which is still the nicer feel where
+  there's real scrollback to move.
+
 ## [2.17.1]
 
 ### Fixed

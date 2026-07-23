@@ -227,6 +227,16 @@ function createPane() {
   // Re-measure this if the wheel path changes; the ratio is the whole feel.
   const LINES_PER_NOTCH = 4;
 
+  // Is this pane showing a full-screen app (the alternate screen)? Those have no
+  // tmux scrollback, so a tmux-side scroll is a no-op there and the wheel must be
+  // used instead. Read from the polled session list, which carries `alt`.
+  function paneOnAltScreen(pane) {
+    const t = pane && pane.active;
+    if (!t) return false;
+    const s = (sessionList || []).find((x) => x.host === t.host && x.name === t.name);
+    return !!(s && s.alt);
+  }
+
   function enableTouchScroll(pane) {
     const surface = pane.termEl;
     let lastY = null, lastX = null, acc = 0, mode = null;   // mode: "scroll" | "ignore"
@@ -280,6 +290,17 @@ function createPane() {
 
       ev.preventDefault();     // stop the page rubber-banding under the terminal
 
+      // Exact-line tmux scrolling only works when tmux owns the scrollback. A
+      // full-screen app (Claude Code's TUI, vim, less) runs on the ALTERNATE
+      // screen, which has no tmux history at all -- `copy-mode` there enters
+      // copy mode and scrolls nothing, which is exactly how this regressed.
+      // For those panes the wheel is correct: xterm encodes it and the app
+      // scrolls its own view, the same as a desktop wheel.
+      if (paneOnAltScreen(pane)) {
+        wheelScroll();
+        return;
+      }
+
       // Preferred path: ask tmux to scroll an exact number of lines, over the
       // socket that is already open. One line of travel moves one line of pane,
       // which is as fine as tmux goes -- the wheel below can only land on
@@ -293,7 +314,13 @@ function createPane() {
         return;
       }
 
-      // Fallback (socket not up): the wheel, calibrated to track the finger.
+      wheelScroll();   // socket not up: the wheel, calibrated to track the finger
+    }, { passive: false });
+
+    // The wheel path, calibrated so content tracks the finger. Used for
+    // alternate-screen panes (the app scrolls itself) and as the fallback when
+    // the attach socket is down.
+    function wheelScroll() {
       const step = notchDistance();
       const notches = Math.trunc(acc / step);
       if (!notches) return;
@@ -309,7 +336,7 @@ function createPane() {
           deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true,
         }));
       }
-    }, { passive: false });
+    }
 
     const end = () => { lastY = lastX = null; acc = 0; mode = null; };
     surface.addEventListener("touchend", end, { passive: true });
