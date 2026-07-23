@@ -69,6 +69,13 @@ def upsert(records: list[dict]) -> None:
     Never removes an entry that is merely absent from ``records`` -- a missing
     session may be gone from a reboot, which is what restore is for. Only writes
     when something actually changed.
+
+    Tags are treated as sticky: an *empty* tags value on a live session does not
+    overwrite non-empty tags already in the snapshot. The snapshot exists to
+    survive a session ceasing to exist, so it must not throw away good tags the
+    instant a session is seen degraded -- e.g. an attached session recreated
+    tag-less by a reconnect after a restart. A deliberate clear is recorded by
+    the explicit tag-set path (see ``set_tags`` -> ``store.set_tags``), not here.
     """
     data = _load()
     changed = False
@@ -77,10 +84,28 @@ def upsert(records: list[dict]) -> None:
         if not rec["host"] or not rec["name"]:
             continue
         k = _key(rec["host"], rec["name"])
-        if data.get(k) != rec:
+        prior = data.get(k)
+        # empty live tags must not clobber good stored tags (the bug this guards)
+        if not rec.get("tags") and prior and prior.get("tags"):
+            rec["tags"] = prior["tags"]
+        if prior != rec:
             data[k] = rec
             changed = True
     if changed:
+        _atomic_write(data)
+
+
+def set_tags(host: str, name: str, tags: list) -> None:
+    """Record a deliberate tag change (including a clear) straight into the
+    snapshot, so ``upsert``'s sticky-tags rule can't later resurrect old tags.
+    A no-op if the session isn't snapshotted yet -- the next poll will add it."""
+    data = _load()
+    k = _key(host, name)
+    rec = data.get(k)
+    if rec is None:
+        return
+    if rec.get("tags") != tags:
+        rec["tags"] = tags
         _atomic_write(data)
 
 

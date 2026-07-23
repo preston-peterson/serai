@@ -284,7 +284,16 @@ WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
 ExecStart=${INSTALL_DIR}/run.sh
 Restart=on-failure
-RestartSec=2"
+RestartSec=2
+# KillMode=process is load-bearing, not a tweak. serai's first tmux attach
+# starts the tmux server, which then lives in this service's cgroup. Under the
+# default KillMode=control-group a restart SIGKILLs the whole cgroup -- taking
+# the tmux server, and every session on it, down with serai. That is the exact
+# opposite of invariant #4 (tmux is the persistence substrate; a serai restart
+# must never drop a session). With =process only the main process (uvicorn) is
+# signalled; the tmux server survives, and terminals reconnect to it. Orphaned
+# tmux clients exit on their own when uvicorn's PTYs close.
+KillMode=process"
 
 if [ "$MODE" = "user" ]; then
     UNIT_PATH="$USER_HOME/.config/systemd/user/serai.service"

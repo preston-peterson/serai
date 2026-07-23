@@ -428,6 +428,26 @@ async def api_sessions() -> JSONResponse:
         *[loop.run_in_executor(_pool, sessions.list_sessions, t) for t in targets]
     )
     flat = [s.as_dict() for group in results for s in group]
+
+    # Self-heal tags. A session recreated by a reconnect (an attached session
+    # after a restart) comes back without its @serai_tags. If the restore
+    # snapshot still has tags for it -- which store.upsert now keeps sticky
+    # against the transient empty -- re-apply them to the live session and show
+    # them straight away, so a code update never silently drops a tag. A
+    # deliberate clear leaves empty stored tags (store.set_tags), so it is not
+    # resurrected here.
+    saved = await loop.run_in_executor(_pool, store.saved)
+    by_key = {f"{r.get('host')}::{r.get('name')}": r for r in saved}
+    for rec in flat:
+        if rec.get("tags"):
+            continue
+        prior = by_key.get(f"{rec['host']}::{rec['name']}")
+        if prior and prior.get("tags"):
+            rec["tags"] = list(prior["tags"])                      # show it now
+            loop.run_in_executor(                                   # and heal tmux
+                _pool, sessions.run_send,
+                sessions.set_tags_argv(rec["host"], rec["name"], ",".join(prior["tags"])))
+
     await loop.run_in_executor(_pool, store.upsert, flat)  # snapshot for post-reboot restore
     return JSONResponse(flat)
 
@@ -645,6 +665,9 @@ async def api_tags(request: Request) -> JSONResponse:
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send,
                                     sessions.set_tags_argv(host, name, ",".join(clean)))
+    # Record the deliberate change (including a clear) straight into the restore
+    # snapshot, so upsert's sticky-tags rule doesn't later resurrect old tags.
+    await loop.run_in_executor(_pool, store.set_tags, host, name, clean)
     sessions.clear_cache(host)
     return JSONResponse({"ok": bool(ok), "tags": clean})
 

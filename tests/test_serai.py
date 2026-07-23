@@ -2101,3 +2101,72 @@ def test_update_apply_falls_back_for_a_legacy_installer(tmp_path, monkeypatch):
     assert res["ok"] is True and res["restart"].get("self") is True
     assert "--no-restart" not in seen["cmd"], "legacy installer must not get the flag"
     assert restart_called["n"] == 0, "we must not double-restart a self-restarting installer"
+
+
+# --- tag loss on reconnect (v2.17.x) ---------------------------------------
+# An attached session recreated by a reconnect after a restart comes back
+# without @serai_tags. The snapshot must keep the good tags (sticky against an
+# empty live value) and the poll must heal the live session from it.
+
+def test_store_upsert_does_not_clobber_tags_with_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/p", "tags": ["prod", "web"]}])
+    # a poll after the session was recreated tag-less -- must NOT wipe the tags
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/p", "tags": []}])
+    kept = next(r["tags"] for r in store.saved() if r["name"] == "cc-x")
+    assert kept == ["prod", "web"], "empty live tags clobbered the good snapshot"
+
+
+def test_store_set_tags_records_a_deliberate_clear(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/p", "tags": ["prod"]}])
+    store.set_tags("local", "cc-x", [])                 # user cleared them on purpose
+    assert next(r["tags"] for r in store.saved() if r["name"] == "cc-x") == []
+    # and now an empty poll matches -- the clear is not resurrected
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/p", "tags": []}])
+    assert next(r["tags"] for r in store.saved() if r["name"] == "cc-x") == []
+
+
+def test_store_set_tags_noop_for_unknown_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.set_tags("local", "not-there", ["x"])          # must not create an entry
+    assert store.saved() == []
+
+
+def test_api_sessions_reheals_tags_from_the_snapshot(tmp_path, monkeypatch):
+    """A live session discovered tag-less, but tagged in the snapshot, is shown
+    tagged and re-tagged in tmux -- the reconnect tag-loss, self-healed."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("serai.main.config.parse_ssh_config", lambda: [])
+    # the snapshot remembers the tags; the live session has lost them
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/p", "tags": ["prod"]}])
+    live = sessions.Session(host="local", name="cc-x", kind="claude", label="x",
+                            state="idle", attached=False, tags=[], path="/p")
+    monkeypatch.setattr("serai.main.sessions.list_sessions", lambda t: [live] if t == "local" else [])
+    reapplied = {}
+    monkeypatch.setattr("serai.main.sessions.run_send",
+                        lambda argv: reapplied.setdefault("argv", argv) or True)
+    body = TestClient(app).get("/api/sessions").json()
+    row = next(r for r in body if r["name"] == "cc-x")
+    assert row["tags"] == ["prod"], "the UI should show the healed tags immediately"
+    assert "prod" in " ".join(reapplied.get("argv", [])), "tmux should be re-tagged"
+
+
+def test_installer_unit_sets_killmode_process():
+    """Invariant #4 guard: serai's first tmux attach starts the tmux server
+    inside serai's cgroup, so the unit MUST use KillMode=process -- otherwise a
+    restart takes the whole tmux fleet down with serai. (Confirmed by repro:
+    control-group kills the server on restart, process leaves it running.)"""
+    repo = Path(__file__).resolve().parent.parent
+    out = subprocess.run(["bash", str(repo / "install.sh"), "--dry-run"],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    # find the emitted unit body and assert the KillMode line is present
+    assert "KillMode=process" in out.stdout
+    assert "KillMode=control-group" not in out.stdout.replace(
+        "default KillMode=control-group", "")   # ignore the explanatory comment

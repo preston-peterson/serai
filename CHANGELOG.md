@@ -9,6 +9,23 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.17.1]
+
+### Fixed
+
+- **A code update could drop a session's tags — or, worse, the whole tmux
+  fleet.** serai's first attach starts the tmux server inside serai's own
+  systemd cgroup, and the unit didn't set `KillMode`, so a restart signalled the
+  entire cgroup: a backend update or a manual `systemctl restart serai` could
+  take down the tmux server and every session on it. The unit now uses
+  `KillMode=process`, so only serai itself restarts and your sessions keep
+  running (invariant: tmux is the persistence substrate). **Apply this update
+  with `./install.sh`, not a bare `systemctl restart` — the installer reloads
+  the unit before restarting, which a manual restart wouldn't.**
+- Tags are now **self-healing**: if a session ever comes back without its tags,
+  serai re-applies them from its restore snapshot and shows them straight away.
+  The snapshot also stopped overwriting good tags with a transient empty value.
+
 ## [2.17.0]
 
 ### Added
