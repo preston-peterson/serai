@@ -9,6 +9,20 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.18.0]
+
+### Added
+
+- **Resume a Claude session after `/exit`.** When you exit a Claude Code
+  session, it now lingers on the board as a dimmed **resume** card instead of
+  just vanishing. One tap reopens it in its project directory running
+  `claude --resume`, dropping you into the conversation picker — pick up where
+  you left off. Dismiss the card with ✕ if you meant to close it. (Only recent
+  exits are offered, and never a session you deliberately killed.)
+- **Shift+Tab on the mobile key bar** — the key Claude Code uses to cycle its
+  permission mode, which a soft keyboard can't send. It sits between `tab` and
+  `^C`.
+
 ## [2.17.2]
 
 ### Fixed

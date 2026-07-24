@@ -449,6 +449,7 @@ async def api_sessions() -> JSONResponse:
                 sessions.set_tags_argv(rec["host"], rec["name"], ",".join(prior["tags"])))
 
     await loop.run_in_executor(_pool, store.upsert, flat)  # snapshot for post-reboot restore
+    store.mark_live([f"{s['host']}::{s['name']}" for s in flat])  # for resume-after-exit
     return JSONResponse(flat)
 
 
@@ -459,6 +460,18 @@ async def api_sessions_saved() -> JSONResponse:
     saved = await loop.run_in_executor(_pool, store.saved)
     known = _known_hosts()
     return JSONResponse([r for r in saved if r.get("host") in known])
+
+
+@app.get("/api/sessions/exited")
+async def api_sessions_exited() -> JSONResponse:
+    """Claude sessions seen live earlier this run but no longer live -- offered
+    on the board as one-click `claude --resume`. Distinct from /saved (the full
+    post-reboot snapshot): this is the narrow "you just /exited this, resume it?"
+    case, recency-scoped so old exits don't pile up. Known hosts only."""
+    loop = asyncio.get_event_loop()
+    exited = await loop.run_in_executor(_pool, store.recently_exited)
+    known = _known_hosts()
+    return JSONResponse([r for r in exited if r.get("host") in known])
 
 
 @app.post("/api/sessions/restore")

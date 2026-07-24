@@ -305,6 +305,14 @@ body {
 .bcard.st-needs_input { --state: var(--st-blocked); }
 .bcard.st-done { --state: var(--st-done); }
 .bcard.st-idle { --state: var(--st-idle); }
+/* an exited claude session, offered for resume: dimmed, with an accented
+   "resume" action so it reads as a call to act, not a live session */
+.bcard.st-exited { --state: var(--st-idle); opacity: .82; border-style: dashed; }
+.bcard.st-exited:hover { opacity: 1; }
+.dot.exited { background: var(--st-idle); }
+.bcard .mini.pri { color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 600; }
+.bcard .mini.pri:hover { filter: brightness(1.08); color: var(--accent-ink); }
+.bcard .mini.x { padding: .12rem .34rem; }
 .bcard-h {
   display: flex; align-items: center; gap: .5rem; padding: .55rem .68rem .45rem;
   background: color-mix(in srgb, var(--state) 8%, transparent);

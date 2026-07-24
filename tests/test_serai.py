@@ -2189,3 +2189,67 @@ def test_alternate_screen_flag_parsed_without_shifting_the_path(monkeypatch):
     assert by["shell-tui"].path == "/home/u/app"
     assert by["shell-tui"].dir == "~/git/proj"
     assert by["shell-tui"].as_dict()["alt"] is True     # reaches the client
+
+
+# --- resume after /exit (v2.18.x) ------------------------------------------
+# A claude session seen live this run, then gone (a `/exit`), is offered for
+# resume. Recency-scoped, claude-only, and never for an explicitly-killed one.
+
+def test_recently_exited_offers_a_vanished_claude_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store._seen_live.clear(); store._live_now = set()
+    store.upsert([
+        {"host": "local", "name": "cc-web", "kind": "claude", "label": "web", "path": "/w", "tags": ["p"]},
+        {"host": "local", "name": "shell-x", "kind": "shell", "label": "x", "path": "/x", "tags": []},
+    ])
+    store.mark_live(["local::cc-web", "local::shell-x"])   # both seen live
+    store.mark_live([])                                    # next poll: both gone
+    ex = store.recently_exited()
+    names = [r["name"] for r in ex]
+    assert names == ["cc-web"], "only the claude session should be resumable"
+    assert ex[0]["path"] == "/w" and ex[0]["tags"] == ["p"]   # enough to relaunch
+
+
+def test_recently_exited_excludes_still_live_and_never_seen(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store._seen_live.clear(); store._live_now = set()
+    store.upsert([{"host": "local", "name": "cc-a", "kind": "claude", "label": "a", "path": "/a", "tags": []}])
+    store.mark_live(["local::cc-a"])                       # still live
+    assert store.recently_exited() == []                  # live -> not offered
+
+
+def test_recently_exited_respects_the_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store._seen_live.clear(); store._live_now = set()
+    store.upsert([{"host": "local", "name": "cc-old", "kind": "claude", "label": "old", "path": "/o", "tags": []}])
+    store.mark_live(["local::cc-old"])
+    store.mark_live([])                                    # exited now
+    assert [r["name"] for r in store.recently_exited(window=10_000)] == ["cc-old"]
+    assert store.recently_exited(window=0) == []           # outside the window
+
+
+def test_recently_exited_skips_an_explicitly_killed_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store._seen_live.clear(); store._live_now = set()
+    store.upsert([{"host": "local", "name": "cc-k", "kind": "claude", "label": "k", "path": "/k", "tags": []}])
+    store.mark_live(["local::cc-k"]); store.mark_live([])
+    store.remove("local", "cc-k")                          # the ✕ kill drops the snapshot record
+    assert store.recently_exited() == [], "a deliberate kill must not offer resume"
+
+
+def test_api_sessions_exited_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("serai.main.config.parse_ssh_config", lambda: [])
+    store._seen_live.clear(); store._live_now = set()
+    c = TestClient(app)
+    # a live claude session, then it exits
+    monkeypatch.setattr("serai.main.sessions.list_sessions",
+                        lambda t: [sessions.Session(host="local", name="cc-x", kind="claude",
+                                                    label="x", state="running", attached=True,
+                                                    tags=[], path="/x")] if t == "local" else [])
+    assert c.get("/api/sessions").json()[0]["name"] == "cc-x"   # seen live
+    assert c.get("/api/sessions/exited").json() == []           # still live -> nothing
+    monkeypatch.setattr("serai.main.sessions.list_sessions", lambda t: [])  # it exited
+    c.get("/api/sessions")                                       # poll notices it gone
+    ex = c.get("/api/sessions/exited").json()
+    assert [r["name"] for r in ex] == ["cc-x"]

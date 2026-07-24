@@ -16,10 +16,21 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 # the descriptor kept per session -- enough to recreate it, nothing sensitive
 _FIELDS = ("host", "name", "kind", "label", "path", "tags")
+
+# In-memory "seen live this run" tracking, for the resume-after-exit affordance.
+# Not persisted: it answers "which sessions did I just have open?", which is a
+# property of the current serai run, not durable state. A machine reboot (all
+# sessions gone) is the restore banner's job, driven by the persistent snapshot;
+# this is the narrower "you exited a claude session a moment ago -- resume it?".
+_seen_live: dict[str, float] = {}   # host::name -> wall time last seen live
+_live_now: set[str] = set()         # keys live as of the most recent mark_live
+# how long an exited session keeps offering resume (env override for forks/tests)
+_RESUME_WINDOW = 6 * 3600.0
 
 
 def _config_dir() -> Path:
@@ -119,3 +130,38 @@ def remove(host: str, name: str) -> None:
 def saved() -> list[dict]:
     """The saved session descriptors, in a stable order."""
     return sorted(_load().values(), key=lambda r: (r.get("host", ""), r.get("name", "")))
+
+
+def mark_live(keys) -> None:
+    """Record which sessions are live right now (called each /api/sessions poll).
+    Stamps a last-seen time so a session that later vanishes can be offered for
+    resume, and remembers the current live set to tell live from exited."""
+    global _live_now
+    now = time.time()
+    keys = list(keys)
+    for k in keys:
+        _seen_live[k] = now
+    _live_now = set(keys)
+
+
+def recently_exited(window: float | None = None) -> list[dict]:
+    """Claude sessions seen live earlier this run but no longer live -- the
+    resume-after-`/exit` candidates.
+
+    Requires a snapshot record (for the dir/tags/kind needed to relaunch), so an
+    explicitly-killed session (``remove`` dropped its record) never resurfaces,
+    and only ``claude`` sessions are offered -- a shell has nothing to resume.
+    Scoped to a recent window so old exits don't pile up; the reboot case, where
+    nothing was seen live this run, stays the restore banner's job.
+    """
+    win = _RESUME_WINDOW if window is None else window
+    now = time.time()
+    data = _load()
+    out = []
+    for k, seen in _seen_live.items():
+        if k in _live_now or (now - seen) > win:
+            continue
+        rec = data.get(k)
+        if rec and rec.get("kind") == "claude":
+            out.append(rec)
+    return sorted(out, key=lambda r: (r.get("host", ""), r.get("name", "")))

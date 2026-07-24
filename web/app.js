@@ -957,7 +957,24 @@ async function loadSessions() {
   renderWorkspaces();
   renderTree();
   loadSavedSessions(); // refresh the post-reboot restore banner
+  loadExitedSessions(); // refresh the resume-after-exit cards
 }
+
+// Claude sessions that were open a moment ago and have since exited (a `/exit`
+// leaves the tmux session gone). The board shows them as dimmed "resume" cards
+// so you can drop back into `claude --resume` and pick the conversation.
+let exitedSessions = [];
+async function loadExitedSessions() {
+  try {
+    const r = await (await fetch("/api/sessions/exited")).json();
+    // a session that is live again (resumed elsewhere) must not linger here
+    const live = new Set(sessionList.map((s) => `${s.host}::${s.name}`));
+    exitedSessions = (Array.isArray(r) ? r : [])
+      .filter((s) => !live.has(`${s.host}::${s.name}`) && !exitedDismissed.has(`${s.host}::${s.name}`));
+  } catch { exitedSessions = []; }
+  renderBoard();
+}
+const exitedDismissed = new Set(); // "host::name" hidden for this page's lifetime
 
 // --- resume sessions after a reboot -----------------------------------------
 // serai snapshots open sessions server-side; when saved sessions aren't running
@@ -1376,17 +1393,53 @@ function renderBoard() {
     chip("running", "working") + chip("needs_input", "blocked") +
     chip("done", "done") + chip("idle", "idle");
 
+  // Exited claude sessions you can resume, scoped to the same filter/workspace.
+  const resumable = (exitedSessions || []).filter((s) => matchesFilter(s) && matchesWorkspace(s));
+
   const grid = document.getElementById("board-grid");
   // Fewer cards -> bigger cards. Narrow to one project and the room goes into the
   // pane preview instead of whitespace; the tiers are pure CSS custom properties.
-  grid.classList.toggle("large", items.length > 0 && items.length <= 2);
-  grid.classList.toggle("roomy", items.length > 2 && items.length <= 6);
+  const total = items.length + resumable.length;
+  grid.classList.toggle("large", total > 0 && total <= 2);
+  grid.classList.toggle("roomy", total > 2 && total <= 6);
 
-  if (!items.length) {
+  if (!total) {
     grid.innerHTML = `<div class="board-empty">${filterText ? "no matching sessions" : "no sessions here yet"}</div>`;
     return;
   }
   grid.innerHTML = "";
+
+  // Resume cards first -- an exited session is the thing most likely to want you.
+  for (const s of resumable) {
+    const card = document.createElement("div");
+    card.className = "bcard st-exited exited";
+    const tagsHtml = (s.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
+    card.innerHTML =
+      `<div class="bcard-h">` +
+        `<span class="bkind cc">cc</span>` +
+        `<span class="bname">${escapeHtml(s.label || s.name)}</span>` +
+        `<span class="bhost">${s.host === "local" ? "local" : escapeHtml(s.host)}</span>` +
+      `</div>` +
+      `<div class="btail"><span class="d">exited · ${escapeHtml(s.path || "")}</span></div>` +
+      `<div class="bcard-f">` +
+        `<span class="bchip"><i class="dot exited"></i>exited</span>` +
+        `<span class="wn">${tagsHtml}</span>` +
+        `<button class="mini x" type="button" title="dismiss">✕</button>` +
+        `<button class="mini pri" type="button" title="reopen claude and pick a conversation to resume">resume</button>` +
+      `</div>`;
+    const resume = () => attach({ host: s.host, name: s.name, kind: "claude",
+                                  label: s.label || s.name, path: s.path, resume: "resume" });
+    card.onclick = resume;
+    card.querySelector(".mini.pri").onclick = (e) => { e.stopPropagation(); resume(); };
+    card.querySelector(".mini.x").onclick = (e) => {
+      e.stopPropagation();
+      exitedDismissed.add(`${s.host}::${s.name}`);
+      exitedSessions = exitedSessions.filter((x) => !(x.host === s.host && x.name === s.name));
+      renderBoard();
+    };
+    grid.appendChild(card);
+  }
+
   for (const s of items) {
     const active = panes.some((p) => p.active && p.active.host === s.host && p.active.name === s.name);
     const card = document.createElement("div");
@@ -3057,7 +3110,7 @@ setMouse.addEventListener("change", () => {
 // A soft keyboard has no esc/tab/ctrl/arrows, which makes a terminal unusable on
 // a phone, so a key bar sends the sequences straight down the pane's socket.
 const KEY_SEQ = {
-  esc: "\x1b", tab: "\t", ctrlc: "\x03",
+  esc: "\x1b", tab: "\t", shifttab: "\x1b[Z", ctrlc: "\x03",
   up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", right: "\x1b[C",
   pipe: "|", tilde: "~", slash: "/", dash: "-",
 };

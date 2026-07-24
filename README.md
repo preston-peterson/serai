@@ -100,11 +100,17 @@ survives you `cd`-ing elsewhere and is reused when restoring after a reboot.
 per-session choice of how each Claude session returns: continue the last
 conversation, open its resume picker, or start fresh.
 
+**Exit a Claude session** (`/exit`) and it doesn't just vanish — it stays on the
+board as a dimmed **resume** card. One tap reopens it in its project directory
+running `claude --resume`, so you land back in the conversation picker. Dismiss
+the card if you meant to close it.
+
 ## On a phone
 
 The same app, laid out for one thumb: the board becomes a single column, the rail
 slides in as a drawer, and the terminal gets a key bar for the keys a soft
-keyboard doesn't have — `esc`, `tab`, `^C`, arrows, `|`, `~`, `/`. Long-press a
+keyboard doesn't have — `esc`, `tab`, `⇧⇥` (Shift+Tab, to cycle Claude Code's
+mode), `^C`, arrows, `|`, `~`, `/`. Long-press a
 file for its actions.
 
 <p>
