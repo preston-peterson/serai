@@ -9,6 +9,38 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.18.3]
+
+### Added
+
+- **Set every restore dropdown at once.** The post-reboot banner now carries a
+  "set all N Claude sessions to" control above the list, so you choose once
+  instead of clicking through two dozen rows. Individual rows stay editable
+  afterwards for the odd one out.
+
+### Changed
+
+- **Restoring a Claude session now opens its resume picker by default**
+  (`claude --resume`) rather than silently continuing the most recent
+  conversation. With "continue" you got *a* conversation without being told
+  which one; the picker shows you what you're resuming into. "continue last"
+  and "fresh" are still there in the dropdown.
+- **Board cards no longer lift on hover.** They highlight instead. The 1px
+  transform made a column of cards read as bouncing as the pointer ran down it.
+  Rail rows are pinned to a fixed height for the same reason.
+
+### Fixed
+
+- **Sessions no longer inherit serai's own working directory.** The PTY child
+  kept serai's cwd, so a session created with no start dir opened *inside
+  serai's install tree* — the root of the wrong-directory bug in 2.18.2. It now
+  starts in your home directory, and an explicit start dir is applied as before.
+- **A stale browser tab could stamp the bad directory back.** `ws_attach` writes
+  the client-supplied path onto the session as `@serai_dir`; a tab still holding
+  a pre-fix session list echoed serai's own directory back and it stuck.
+  `clean_dir` now normalises that away, so a trailing slash or `.` segment can't
+  smuggle it through either.
+
 ## [2.18.2]
 
 ### Fixed

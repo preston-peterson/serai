@@ -565,11 +565,33 @@ def clean_dir(path: str) -> str:
 
     "::" is the field separator in _FMT, so a path containing it would corrupt
     the listing parse -- reject rather than silently mangle the row.
+
+    serai's own working directory is normalised away to "": it is where a session
+    lands when it was created with **no** start dir at all, so accepting it would
+    stamp a non-choice onto the session as if it were a deliberate project dir.
+    That is how every Claude session once came back inside serai's install tree
+    -- a stale client echoed that path back on attach, and it stuck.
     """
     p = (path or "").strip()
     if "::" in p:
         raise ValueError("a start directory cannot contain '::'")
-    return p
+    return "" if p and _same_dir(p, own_dir()) else p
+
+
+def own_dir() -> str:
+    """serai's own working directory -- never a meaningful dir for a session."""
+    try:
+        return os.getcwd()
+    except OSError:            # cwd unlinked: match nothing rather than everything
+        return "\0"
+
+
+def _same_dir(a: str, b: str) -> bool:
+    """Compare two dirs without being fooled by a trailing slash or `.` segment.
+    Textual only -- these may be *remote* paths, so no filesystem calls."""
+    if not a or not b:
+        return False
+    return os.path.normpath(os.path.expanduser(a)) == os.path.normpath(b)
 
 
 _TAG_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")

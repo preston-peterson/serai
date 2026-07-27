@@ -1013,9 +1013,43 @@ function updateRestoreBanner() {
   banner.hidden = false;
 }
 
+// How a Claude session comes back, and the labels for the picker. "resume" is
+// the default because it lands you in claude's own conversation picker: with
+// "continue" you get *a* conversation without being told which one.
+const RESUME_CHOICES = [["resume", "resume…"], ["continue", "continue last"], ["", "fresh"]];
+const RESUME_DEFAULT = "resume";
+
 function renderRestoreList(missing) {
   const list = document.getElementById("restore-list");
   list.innerHTML = "";
+
+  // Set-them-all control. With a couple of dozen sessions, setting each row's
+  // dropdown by hand is the tedious part; this writes every row at once and
+  // leaves each still individually editable afterwards.
+  const claudeRows = missing.filter((r) => r.kind === "claude");
+  if (claudeRows.length > 1) {
+    const head = document.createElement("div");
+    head.className = "restore-row restore-bulk";
+    const text = document.createElement("span");
+    text.className = "restore-row-text muted";
+    text.textContent = `set all ${claudeRows.length} Claude sessions to`;
+    const sel = document.createElement("select");
+    sel.className = "restore-resume";
+    sel.title = "Apply one choice to every Claude session below";
+    for (const [value, label] of RESUME_CHOICES) {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = label;
+      sel.appendChild(o);
+    }
+    sel.value = RESUME_DEFAULT;
+    sel.addEventListener("change", () => {
+      for (const r of claudeRows) restoreResume.set(`${r.host}::${r.name}`, sel.value);
+      renderRestoreList(missing);           // reflect it on every row
+    });
+    head.append(text, sel);
+    list.appendChild(head);
+  }
+
   for (const r of missing) {
     const key = `${r.host}::${r.name}`;
     // A div, not a label: the row now holds a <select>, and clicking that inside
@@ -1042,12 +1076,12 @@ function renderRestoreList(missing) {
       const sel = document.createElement("select");
       sel.className = "restore-resume";
       sel.title = "How this Claude session comes back";
-      for (const [value, label] of [["continue", "continue"], ["resume", "resume…"], ["", "fresh"]]) {
+      for (const [value, label] of RESUME_CHOICES) {
         const o = document.createElement("option");
         o.value = value; o.textContent = label;
         sel.appendChild(o);
       }
-      sel.value = restoreResume.get(key) ?? "continue";
+      sel.value = restoreResume.get(key) ?? RESUME_DEFAULT;
       sel.addEventListener("change", () => restoreResume.set(key, sel.value));
       row.appendChild(sel);
     }
@@ -1062,8 +1096,8 @@ async function doResume(targets) {
     const body = targets ? { targets: targets.map((r) => ({
       host: r.host,
       name: r.name,
-      // per-session choice; "continue" keeps the old behaviour for anything untouched
-      resume: restoreResume.get(`${r.host}::${r.name}`) ?? "continue",
+      // per-session choice; untouched rows take the same default the picker shows
+      resume: restoreResume.get(`${r.host}::${r.name}`) ?? RESUME_DEFAULT,
     })) } : {};
     const data = await (await fetch("/api/sessions/restore", {
       method: "POST", headers: { "Content-Type": "application/json" },

@@ -2186,7 +2186,7 @@ def test_upsert_keeps_a_good_dir_when_a_session_comes_back_in_serais_own_cwd(tmp
     store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
                    "label": "x", "path": "/home/u/git/proj", "tags": ["p"]}])
     store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
-                   "label": "x", "path": store._self_dir(), "tags": ["p"]}])
+                   "label": "x", "path": sessions.own_dir(), "tags": ["p"]}])
     assert store.saved()[0]["path"] == "/home/u/git/proj"
     # an empty live path is equally degraded and must not wipe it either
     store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
@@ -2195,7 +2195,7 @@ def test_upsert_keeps_a_good_dir_when_a_session_comes_back_in_serais_own_cwd(tmp
     # and with nothing stored yet, serai's cwd is recorded as "unknown" rather
     # than as a real dir -- otherwise the first bad poll poisons a fresh session
     store.upsert([{"host": "local", "name": "cc-new", "kind": "claude",
-                   "label": "new", "path": store._self_dir(), "tags": []}])
+                   "label": "new", "path": sessions.own_dir(), "tags": []}])
     assert [r["path"] for r in store.saved() if r["name"] == "cc-new"] == [""]
 
 
@@ -2209,7 +2209,7 @@ def test_upsert_prefers_the_configured_start_dir_over_the_pane_cwd(tmp_path, mon
     # a start-in dir that is itself serai's cwd is disqualified too -- once the
     # bad value leaks into @serai_dir it would otherwise reassert every poll
     store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
-                   "dir": store._self_dir(), "path": store._self_dir(), "tags": []}])
+                   "dir": sessions.own_dir(), "path": sessions.own_dir(), "tags": []}])
     assert store.saved()[0]["path"] == "/home/u/git/proj"
     # and a real move is still recorded when there's no configured dir
     store.upsert([{"host": "local", "name": "cc-y", "kind": "shell", "label": "y",
@@ -2217,6 +2217,28 @@ def test_upsert_prefers_the_configured_start_dir_over_the_pane_cwd(tmp_path, mon
     store.upsert([{"host": "local", "name": "cc-y", "kind": "shell", "label": "y",
                    "path": "/home/u/git/b", "tags": []}])
     assert [r["path"] for r in store.saved() if r["name"] == "cc-y"] == ["/home/u/git/b"]
+
+
+def test_clean_dir_refuses_serais_own_directory():
+    """A stale client echoing serai's own cwd back on attach is exactly how the
+    bad dir got stamped onto @serai_dir and stuck. Normalised, so a trailing
+    slash or a '.' segment can't smuggle the same directory through."""
+    own = sessions.own_dir()
+    assert sessions.clean_dir(own) == ""
+    assert sessions.clean_dir(own + "/") == ""
+    assert sessions.clean_dir(own + "/./") == ""
+    assert sessions.clean_dir("/home/u/git/proj") == "/home/u/git/proj"
+    assert sessions.clean_dir("") == ""
+
+
+def test_upsert_ignores_a_trailing_slash_variant_of_serais_own_dir(tmp_path, monkeypatch):
+    """The guard compares normalised paths, so `<cwd>/` is rejected too."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/home/u/git/proj", "tags": []}])
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "dir": sessions.own_dir() + "/", "path": sessions.own_dir() + "/", "tags": []}])
+    assert store.saved()[0]["path"] == "/home/u/git/proj"
 
 
 def _run_sh_path_probe() -> str:

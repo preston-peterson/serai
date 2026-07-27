@@ -49,14 +49,13 @@ def _key(host: str, name: str) -> str:
     return f"{host}::{name}"
 
 
-def _self_dir() -> str:
-    """serai's own working directory -- where a tmux session lands when it is
-    created with no start directory. Never a meaningful dir for a session, so
-    ``upsert`` refuses to record it over one it already has."""
-    try:
-        return os.getcwd()
-    except OSError:            # cwd unlinked; nothing can equal it, so match nothing
-        return "\0"
+def _is_self_dir(path: str) -> bool:
+    """True if ``path`` is serai's own working directory -- where a tmux session
+    lands when it is created with no start directory. Never a meaningful dir for
+    a session, so ``upsert`` refuses to record it. Compared normalised, so a
+    trailing slash can't smuggle the same directory past the check."""
+    from . import sessions            # leaf import: sessions never imports store
+    return sessions._same_dir(path, sessions.own_dir())
 
 
 def _load() -> dict:
@@ -127,9 +126,9 @@ def upsert(records: list[dict]) -> None:
         # itself on every poll. Falling back, keep what we had rather than record
         # "nowhere" or serai's own directory as a session's project dir.
         live_dir, live_path = r.get("dir") or "", rec.get("path") or ""
-        if live_dir and live_dir != _self_dir():
+        if live_dir and not _is_self_dir(live_dir):
             rec["path"] = live_dir
-        elif not live_path or live_path == _self_dir():
+        elif not live_path or _is_self_dir(live_path):
             rec["path"] = (prior or {}).get("path") or ""
         if prior != rec:
             data[k] = rec

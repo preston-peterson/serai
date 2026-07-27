@@ -170,6 +170,9 @@ body {
   font-family: var(--mono); font-size: 12px;
 }
 .restore-row:hover { background: var(--surface-2); }
+/* the set-them-all row: reads as a control over the list, not one of its items */
+.restore-bulk { border-bottom: 1px solid var(--border); margin-bottom: .25rem; padding-bottom: .35rem; }
+.restore-bulk .restore-row-text { font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; }
 .restore-row-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* the row is a div now (it holds a select); the tick half stays a label */
 .restore-tick { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; cursor: pointer; }
@@ -297,9 +300,12 @@ body {
   border: 1px solid var(--border); border-left: 3px solid var(--state);
   border-radius: 10px; overflow: hidden; background: var(--panel);
   display: flex; flex-direction: column; cursor: pointer;
-  transition: transform .12s, border-color .15s;
+  transition: border-color .15s, background-color .15s;
 }
-.bcard:hover { transform: translateY(-1px); border-color: var(--border-st); }
+/* Highlight on hover, but never move: the card used to lift by 1px, and running
+   the pointer down a column of them read as the whole list bouncing. Colour
+   changes cost no layout and no motion. */
+.bcard:hover { border-color: var(--border-st); background: var(--raised); }
 .bcard.active { border-color: var(--accent); }
 .bcard.st-running { --state: var(--st-working); }
 .bcard.st-needs_input { --state: var(--st-blocked); }
@@ -460,7 +466,7 @@ body {
   /* touch has no hover, so row actions can't hide behind it */
   .rail .row .row-split, .rail .row .row-edit, .rail .row .row-del { visibility: visible; }
   .rail .row:hover .rw { display: inline; }
-  .rail .row { padding: .5rem .5rem; }        /* finger-sized */
+  .rail .row { padding: .5rem .5rem; height: 31px; }   /* finger-sized */
   /* the group header already names the tag -- drop the per-row copy so the
      session name isn't truncated by the always-visible row actions */
   .rail .row .tags { display: none; }
@@ -494,8 +500,12 @@ body {
   padding: .55rem .5rem .3rem; border-radius: 0;
 }
 .rail .group-head:hover { background: transparent; color: var(--text-dim); }
+/* Fixed height (measured: 27.78px natural, so 28px is a no-op at rest). Hovering
+   swaps the age out for the row action buttons, and pinning the height means no
+   difference between those children can ever reflow the list. */
 .rail .row, .rail .row.session {
   margin-left: 0; padding: .4rem .5rem; border-radius: 7px; gap: .5rem;
+  height: 28px; flex: none;
   font-family: var(--mono); font-size: .8rem; color: var(--text-dim);
 }
 .rail .row:hover { background: var(--raised); }

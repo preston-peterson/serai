@@ -833,6 +833,15 @@ async def ws_attach(ws: WebSocket) -> None:
         # fixes remote tmux too). COLORTERM enables 24-bit color in apps.
         os.environ["TERM"] = "xterm-256color"
         os.environ.setdefault("COLORTERM", "truecolor")
+        # Don't hand serai's own working directory to tmux. A session created
+        # with no start dir takes its cwd from the client -- us -- and would
+        # otherwise open *inside serai's install tree*, which then got recorded
+        # as that session's project dir. Home is the sane default; an explicit
+        # start dir is applied by attach_argv itself.
+        try:
+            os.chdir(os.path.expanduser("~"))
+        except OSError:
+            pass
         os.execvp(argv[0], argv)
         os._exit(1)
 

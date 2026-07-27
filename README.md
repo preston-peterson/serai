@@ -97,8 +97,10 @@ terminal and the file browser open there. It's stored on the session, so it
 survives you `cd`-ing elsewhere and is reused when restoring after a reboot.
 
 **After a reboot**, serai offers to bring back the sessions that were open, with a
-per-session choice of how each Claude session returns: continue the last
-conversation, open its resume picker, or start fresh.
+choice of how each Claude session returns: open its resume picker (the default —
+you land in `claude --resume` and pick the conversation), continue the last one,
+or start fresh. Set them all at once from the control above the list, or override
+any single row.
 
 **Exit a Claude session** (`/exit`) and it doesn't just vanish — it stays on the
 board as a dimmed **resume** card. One tap reopens it in its project directory
