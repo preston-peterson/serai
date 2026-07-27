@@ -408,15 +408,19 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     tmux_cmd = ["tmux"]
     if history is not None:
         tmux_cmd += ["set", "-g", "history-limit", str(int(history)), ";"]
+    # What the session runs. A claude session runs `claude` whether or not it has
+    # a start directory -- without this it used to fall through to the bare `new`
+    # below and come up as an ordinary *shell*, sitting in serai's own working
+    # directory, which then got snapshotted as that session's dir and poisoned
+    # every later restore. A shell with no start dir still takes the bare form so
+    # tmux spawns its own login shell exactly as before.
+    run = f"claude{_CLAUDE_RESUME.get(resume, '')}" if kind == "claude" else ""
     if path:
         # Both kinds honour a start directory. `cd` runs in the shell tmux spawns,
         # so _quote_path's expandable ~ works and no tilde reaches tmux itself;
         # a shell then `exec`s so the session behaves like an ordinary login shell.
-        run = (f"claude{_CLAUDE_RESUME.get(resume, '')}" if kind == "claude"
-               else "exec ${SHELL:-/bin/sh}")
-        tmux_cmd += ["new", "-A", "-s", name, f"cd {_quote_path(path)} && {run}"]
-    else:
-        tmux_cmd += ["new", "-A", "-s", name]
+        run = f"cd {_quote_path(path)} && {run or 'exec ${SHELL:-/bin/sh}'}"
+    tmux_cmd += ["new", "-A", "-s", name] + ([run] if run else [])
 
     tmux_cmd += [";", "set-option", "-t", name, "mouse", "on" if mouse else "off"]
     # Publish copy-mode selections as OSC 52 (needs the outer terminal's Ms cap;

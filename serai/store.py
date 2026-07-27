@@ -49,6 +49,16 @@ def _key(host: str, name: str) -> str:
     return f"{host}::{name}"
 
 
+def _self_dir() -> str:
+    """serai's own working directory -- where a tmux session lands when it is
+    created with no start directory. Never a meaningful dir for a session, so
+    ``upsert`` refuses to record it over one it already has."""
+    try:
+        return os.getcwd()
+    except OSError:            # cwd unlinked; nothing can equal it, so match nothing
+        return "\0"
+
+
 def _load() -> dict:
     try:
         data = json.loads(_path().read_text())
@@ -81,12 +91,24 @@ def upsert(records: list[dict]) -> None:
     session may be gone from a reboot, which is what restore is for. Only writes
     when something actually changed.
 
-    Tags are treated as sticky: an *empty* tags value on a live session does not
-    overwrite non-empty tags already in the snapshot. The snapshot exists to
-    survive a session ceasing to exist, so it must not throw away good tags the
-    instant a session is seen degraded -- e.g. an attached session recreated
-    tag-less by a reconnect after a restart. A deliberate clear is recorded by
-    the explicit tag-set path (see ``set_tags`` -> ``store.set_tags``), not here.
+    The rule throughout: **a degraded live value must never destroy good stored
+    state.** The snapshot exists to survive a session ceasing to exist, so it
+    cannot throw away what it needs to recreate one the instant that session is
+    seen in a diminished state.
+
+    Tags are sticky: an *empty* tags value on a live session does not overwrite
+    non-empty stored tags -- e.g. an attached session recreated tag-less by a
+    reconnect after a restart. A deliberate clear is recorded by the explicit
+    tag-set path (see ``set_tags`` -> ``store.set_tags``), not here.
+
+    The stored dir follows the same rule, with one extra guard. It prefers the
+    session's configured start-in dir (``@serai_dir``) over ``pane_current_path``,
+    since that is the dir the session should be *recreated* in and it doesn't
+    drift when you cd. Failing that it takes the live pane's cwd -- except when
+    that cwd is serai's own working directory, which is never a real session dir:
+    it is simply where a session lands when it was created with no start dir at
+    all. Letting that overwrite a good stored dir is how every Claude session
+    once ended up restoring into serai's install directory.
     """
     data = _load()
     changed = False
@@ -99,6 +121,16 @@ def upsert(records: list[dict]) -> None:
         # empty live tags must not clobber good stored tags (the bug this guards)
         if not rec.get("tags") and prior and prior.get("tags"):
             rec["tags"] = prior["tags"]
+        # An explicit start-in dir is authoritative over wherever the pane sits.
+        # serai's own cwd is disqualified in *either* role: it is not a dir anyone
+        # chose, and once it leaks into @serai_dir it would otherwise reassert
+        # itself on every poll. Falling back, keep what we had rather than record
+        # "nowhere" or serai's own directory as a session's project dir.
+        live_dir, live_path = r.get("dir") or "", rec.get("path") or ""
+        if live_dir and live_dir != _self_dir():
+            rec["path"] = live_dir
+        elif not live_path or live_path == _self_dir():
+            rec["path"] = (prior or {}).get("path") or ""
         if prior != rec:
             data[k] = rec
             changed = True

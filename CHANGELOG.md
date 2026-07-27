@@ -9,6 +9,24 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.18.2]
+
+### Fixed
+
+- **Restored Claude sessions all opened in serai's own install directory**
+  instead of their project. Two faults, in a chain. First, a Claude session
+  created with no start directory never ran `claude` at all — `attach_argv` fell
+  through to a bare `tmux new` and the session came up as an ordinary *shell*,
+  sitting in serai's working directory. Second, the session snapshot recorded
+  that directory as the session's own: `store.upsert` took the live pane's cwd
+  at face value, so one degraded session permanently overwrote a good project
+  path — and every later restore then opened there, spreading the bad value into
+  `@serai_dir` as well. Both are closed: a Claude session runs `claude` with or
+  without a start dir, and the snapshot now prefers the configured start-in dir
+  over the pane's cwd, refuses serai's own directory in either role, and never
+  lets an empty value overwrite a stored one. Same rule as the sticky-tags fix
+  in 2.17.1 — **a degraded live value must never destroy good stored state.**
+
 ## [2.18.1]
 
 ### Fixed

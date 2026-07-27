@@ -2157,6 +2157,68 @@ def test_api_sessions_reheals_tags_from_the_snapshot(tmp_path, monkeypatch):
     assert "prod" in " ".join(reapplied.get("argv", [])), "tmux should be re-tagged"
 
 
+def test_claude_session_runs_claude_even_without_a_start_dir():
+    """A claude session with no start dir used to fall through to the bare `new`
+    and come up as an ordinary *shell* -- one that sat in serai's own working
+    directory, which then got snapshotted as that session's dir and poisoned
+    every later restore. `claude` must run either way."""
+    argv = sessions.attach_argv("local", "cc-x", "claude")
+    assert "claude" in argv, f"claude session must still launch claude: {argv}"
+    withdir = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj")
+    assert "cd /tmp/proj && claude" in withdir
+    # resume flags keep working in both shapes
+    assert "claude --resume" in sessions.attach_argv("local", "cc-x", "claude", resume="resume")
+
+
+def test_shell_session_with_no_start_dir_is_unchanged():
+    """The bare form is what lets tmux spawn its own login shell; don't regress
+    it while fixing the claude case."""
+    argv = sessions.attach_argv("local", "shell-x", "shell")
+    assert argv[:5] == ["tmux", "new", "-A", "-s", "shell-x"]
+    assert not any("exec" in a for a in argv)
+
+
+def test_upsert_keeps_a_good_dir_when_a_session_comes_back_in_serais_own_cwd(tmp_path, monkeypatch):
+    """The clobber that sent every restored Claude session into serai's install
+    directory: a session recreated with no start dir lands in serai's cwd, and
+    that cwd was snapshotted straight over the real project dir."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "/home/u/git/proj", "tags": ["p"]}])
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": store._self_dir(), "tags": ["p"]}])
+    assert store.saved()[0]["path"] == "/home/u/git/proj"
+    # an empty live path is equally degraded and must not wipe it either
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude",
+                   "label": "x", "path": "", "tags": ["p"]}])
+    assert store.saved()[0]["path"] == "/home/u/git/proj"
+    # and with nothing stored yet, serai's cwd is recorded as "unknown" rather
+    # than as a real dir -- otherwise the first bad poll poisons a fresh session
+    store.upsert([{"host": "local", "name": "cc-new", "kind": "claude",
+                   "label": "new", "path": store._self_dir(), "tags": []}])
+    assert [r["path"] for r in store.saved() if r["name"] == "cc-new"] == [""]
+
+
+def test_upsert_prefers_the_configured_start_dir_over_the_pane_cwd(tmp_path, monkeypatch):
+    """@serai_dir is the dir a session should be *recreated* in; the pane's cwd
+    drifts the moment you cd, so it must not win."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "dir": "/home/u/git/proj", "path": "/home/u/somewhere/else", "tags": []}])
+    assert store.saved()[0]["path"] == "/home/u/git/proj"
+    # a start-in dir that is itself serai's cwd is disqualified too -- once the
+    # bad value leaks into @serai_dir it would otherwise reassert every poll
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "dir": store._self_dir(), "path": store._self_dir(), "tags": []}])
+    assert store.saved()[0]["path"] == "/home/u/git/proj"
+    # and a real move is still recorded when there's no configured dir
+    store.upsert([{"host": "local", "name": "cc-y", "kind": "shell", "label": "y",
+                   "path": "/home/u/git/a", "tags": []}])
+    store.upsert([{"host": "local", "name": "cc-y", "kind": "shell", "label": "y",
+                   "path": "/home/u/git/b", "tags": []}])
+    assert [r["path"] for r in store.saved() if r["name"] == "cc-y"] == ["/home/u/git/b"]
+
+
 def _run_sh_path_probe() -> str:
     """The PATH-recovery block lifted out of run.sh, so the tests below exercise
     the shipped code rather than a paraphrase of it."""
