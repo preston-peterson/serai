@@ -2157,6 +2157,49 @@ def test_api_sessions_reheals_tags_from_the_snapshot(tmp_path, monkeypatch):
     assert "prod" in " ".join(reapplied.get("argv", [])), "tmux should be re-tagged"
 
 
+def _run_sh_path_probe() -> str:
+    """The PATH-recovery block lifted out of run.sh, so the tests below exercise
+    the shipped code rather than a paraphrase of it."""
+    lines = (Path(__file__).resolve().parent.parent / "run.sh").read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if "SERAI_SKIP_PATH_PROBE" in ln)
+    end = next(i for i, ln in enumerate(lines[start:], start) if ln == "fi")
+    return "\n".join(lines[start:end + 1])
+
+
+def test_run_sh_recovers_the_login_shell_path():
+    """serai's own PATH is the PATH every session it starts runs under: tmux
+    takes a new session's environment from the client that creates it. A
+    lingering user service boots before the desktop pushes ~/.profile's PATH into
+    the systemd user manager, so without this probe serai comes up without
+    ~/.local/bin and every `claude` session dies with "command not found"."""
+    with tempfile.TemporaryDirectory() as home:
+        bindir = Path(home) / ".local" / "bin"
+        bindir.mkdir(parents=True)
+        (Path(home) / ".profile").write_text(f'PATH="{bindir}:$PATH"\n')
+        out = subprocess.run(
+            ["bash", "-c", "set -euo pipefail\n" + _run_sh_path_probe() + '\nprintf %s "$PATH"'],
+            capture_output=True, text=True, timeout=30,
+            env={"HOME": home, "SHELL": "/bin/bash", "PATH": "/usr/bin:/bin"})
+        assert out.returncode == 0, out.stderr
+        assert str(bindir) in out.stdout, "the login shell's PATH additions should survive"
+        assert "/usr/bin" in out.stdout, "and the base PATH must not be lost"
+
+
+@pytest.mark.parametrize("env,why", [
+    ({"SHELL": "/nonexistent/shell"}, "a shell that cannot run"),
+    ({"SHELL": "/bin/sh", "SERAI_SKIP_PATH_PROBE": "1"}, "the operator opting out"),
+])
+def test_run_sh_path_probe_falls_back_safely(env, why):
+    """Best-effort by design -- anything unexpected must leave PATH untouched
+    rather than replace it with junk (or empty)."""
+    out = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + _run_sh_path_probe() + '\nprintf %s "$PATH"'],
+        capture_output=True, text=True, timeout=30,
+        env={"HOME": "/nonexistent", "PATH": "/usr/bin:/bin", **env})
+    assert out.returncode == 0, f"{why}: {out.stderr}"
+    assert out.stdout == "/usr/bin:/bin", f"{why} should leave PATH alone"
+
+
 def test_installer_unit_sets_killmode_process():
     """Invariant #4 guard: serai's first tmux attach starts the tmux server
     inside serai's cgroup, so the unit MUST use KillMode=process -- otherwise a

@@ -8,6 +8,25 @@ PORT="${SERAI_PORT:-8022}"
 
 cd "$(dirname "$0")"
 
+# Recover the PATH a terminal would have. tmux takes a new session's environment
+# from the *client* that creates it -- which is serai -- so serai's PATH is the
+# PATH every session it starts will run under. As a lingering user service serai
+# starts at boot, before the desktop pushes ~/.profile's PATH into the systemd
+# user manager, and comes up with a bare PATH that lacks ~/.local/bin. Tools
+# installed there (`claude` among them) then aren't found, and a Claude session
+# dies the instant it is created -- tmux prints "claude: command not found",
+# destroys the session, and clears the screen on the way out, so the reason is
+# gone before you can read it. Asking the login shell recovers the real PATH
+# regardless of login ordering, because ~/.profile adds those dirs itself.
+# Best-effort by design: a shell that hangs, fails, or answers with something
+# that isn't a PATH leaves ours untouched.
+if [ -z "${SERAI_SKIP_PATH_PROBE:-}" ]; then
+  login_path="$(timeout 5 "${SHELL:-/bin/sh}" -lc 'printf %s "$PATH"' </dev/null 2>/dev/null | tail -n1)" || login_path=""
+  case ":$login_path:" in
+    *:/bin:*|*:/usr/bin:*) export PATH="$login_path" ;;
+  esac
+fi
+
 if [ ! -d .venv ]; then
   python3 -m venv .venv
   ./.venv/bin/pip install -q -e .

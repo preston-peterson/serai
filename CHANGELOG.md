@@ -9,6 +9,23 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.18.1]
+
+### Fixed
+
+- **Claude sessions died the instant they were created, after a reboot.** A new
+  or restored Claude session flashed and vanished — `[exited]`, `[session
+  ended]` — while `claude` ran fine from an ordinary terminal. serai's PATH is
+  the PATH every session it starts runs under, because tmux takes a new
+  session's environment from the client that creates it. As a lingering user
+  service serai starts at *boot*, before the desktop pushes `~/.profile`'s PATH
+  into the systemd user manager, so it came up without `~/.local/bin` and
+  `claude` wasn't on it. tmux then printed `claude: command not found`,
+  destroyed the session, and cleared the screen on the way out — taking the
+  explanation with it. `run.sh` now asks the login shell for its PATH at
+  startup, which is immune to login ordering because `~/.profile` adds those
+  directories itself. Set `SERAI_SKIP_PATH_PROBE=1` to opt out.
+
 ## [2.18.0]
 
 ### Added

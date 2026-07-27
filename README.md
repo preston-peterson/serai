@@ -242,6 +242,15 @@ Everything below is optional; the defaults are sensible.
 | `SERAI_UPDATE_CHECK` | `off` disables the update check entirely (it's the only outbound call serai makes) |
 | `SERAI_UPDATE_REPO` | which repo the update check asks about, `owner/name` — for forks |
 | `SERAI_CONFIG_DIR` | where config, credentials, and the cert live |
+| `SERAI_SKIP_PATH_PROBE` | `1` stops serai asking your login shell for its PATH at startup (see below) |
+
+**About that PATH probe.** tmux gives a new session the environment of whatever
+created it — which is serai — so serai's `PATH` is the `PATH` your sessions run
+under. As a boot-time service it can start before your desktop session has
+published the `PATH` you'd get in a terminal, and then tools in `~/.local/bin`
+(`claude` among them) aren't found. So at startup serai asks your login shell
+what its `PATH` is and adopts it. It's best-effort: if the shell fails, hangs, or
+answers with something that isn't a `PATH`, serai keeps the one it had.
 
 ## Known rough edges
 
