@@ -9,6 +9,33 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.20.0]
+
+### Added
+
+- **Args on the restore banner.** Each Claude session in the post-reboot banner
+  now has a `⋯` that opens its own args box, pre-filled with what that session
+  had. A dot on `⋯` marks a session that carries args, and hovering shows them
+  without opening anything. (The args already survived a reboot — this is about
+  seeing and changing them as you bring everything back.)
+
+### Fixed
+
+- **`claude --continue --resume` on restore.** The banner's dropdown and the
+  session's stored args were both appended, so a session with `--resume` in its
+  args and "continue last" selected came back with two conflicting flags — and a
+  deliberate choice written into the args was silently overridden. The args are
+  the command line: serai now adds a resume flag only when they don't carry one,
+  and the row's dropdown reads `args`, greyed, when they do.
+
+### Changed
+
+- **Session names in the restore banner have more room.** The resume dropdown is
+  fixed-width — it used to resize to the selected option, so picking "continue
+  last" squeezed the name beside it and names jumped as you changed it — and the
+  host is shown only when it isn't `local`. Together those more than pay for the
+  space the new `⋯` takes.
+
 ## [2.19.1]
 
 ### Changed

@@ -2294,6 +2294,59 @@ def test_upsert_keeps_stored_args_when_a_session_comes_back_bare(tmp_path, monke
     assert store.saved()[0]["args"] == ""
 
 
+def test_args_win_over_the_resume_dropdown():
+    """The args are the command line. Appending our own flag as well produced
+    `claude --continue --resume`, and silently overrode a deliberate choice the
+    user had written into the args."""
+    # args say nothing -> the picked mode is applied, as before
+    assert sessions.resume_flag("continue", "--chrome") == " --continue"
+    assert sessions.resume_flag("resume", "") == " --resume"
+    # args say something -> serai adds nothing
+    for a in ["--resume", "--chrome --resume", "--continue", "--resume=abc123"]:
+        assert sessions.resume_flag("continue", a) == "", a
+        assert sessions.resume_flag("resume", a) == "", a
+    # ...and a lookalike must not suppress it
+    assert sessions.resume_flag("resume", "--resumable") == " --resume"
+    # end to end through both builders
+    assert "claude --continue --resume" not in " ".join(
+        sessions.restore_argv("local", "cc-x", "claude", "/tmp/p", "continue", "--resume"))
+    assert "claude --resume" in " ".join(
+        sessions.restore_argv("local", "cc-x", "claude", "/tmp/p", "continue", "--resume"))
+    assert "claude --chrome" in sessions.attach_argv(
+        "local", "cc-x", "claude", resume="continue", args="--chrome --resume")[5]
+
+
+def test_restore_takes_edited_args_but_absence_means_keep(monkeypatch, tmp_path):
+    """The banner may edit a session's args. A target that omits `args` entirely
+    must fall back to the snapshot -- absent is not the same as cleared."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: False)
+    sent = []
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: sent.append(argv) or True)
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/p", "tags": [], "args": "--chrome"}])
+    client = TestClient(app)
+
+    client.post("/api/sessions/restore",
+                json={"targets": [{"host": "local", "name": "cc-x", "resume": "resume"}]})
+    assert any("claude --resume --chrome" in " ".join(a) for a in sent), "snapshot args used"
+
+    sent.clear()
+    client.post("/api/sessions/restore",
+                json={"targets": [{"host": "local", "name": "cc-x", "resume": "resume",
+                                   "args": "--model opus"}]})
+    assert any("claude --resume --model opus" in " ".join(a) for a in sent), "edited args used"
+    assert store.saved()[0]["args"] == "--model opus", "an edit is recorded, not just applied"
+
+    # an edited clear sticks rather than being resurrected by the sticky rule
+    sent.clear()
+    client.post("/api/sessions/restore",
+                json={"targets": [{"host": "local", "name": "cc-x", "resume": "resume",
+                                   "args": ""}]})
+    assert store.saved()[0]["args"] == ""
+
+
 def test_api_args_sanitises_and_records(monkeypatch, tmp_path):
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])

@@ -379,6 +379,23 @@ _CLAUDE_RESUME = {"continue": " --continue", "resume": " --resume"}
 # the mapping is a lookup rather than interpolation -- nothing to inject.
 RESUME_CHOICES = ("", "continue", "resume")
 
+# Does the user's own args already say how the session comes back?
+_RESUME_IN_ARGS = re.compile(r"(?:^|\s)'?--(?:resume|continue)\b")
+
+
+def resume_flag(resume: str, args: str = "") -> str:
+    """The ` --resume`/` --continue` to append, or "" if the args already say.
+
+    **The args are the command line**, so they win. Appending a second flag gave
+    `claude --continue --resume` when a session had `--resume` in its args and
+    the restore banner said "continue last" -- and it silently overrode a
+    deliberate choice the user had written down. Same rule the restart action
+    follows: serai adds a flag only where the user hasn't expressed one.
+    """
+    if args and _RESUME_IN_ARGS.search(args):
+        return ""
+    return _CLAUDE_RESUME.get(resume, "")
+
 
 def attach_argv(host: str, name: str, kind: str, path: str | None = None,
                 resume: str = "", mouse: bool = True, history: int | None = None,
@@ -419,7 +436,7 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     # directory, which then got snapshotted as that session's dir and poisoned
     # every later restore. A shell with no start dir still takes the bare form so
     # tmux spawns its own login shell exactly as before.
-    run = f"claude{_CLAUDE_RESUME.get(resume, '')}" if kind == "claude" else ""
+    run = f"claude{resume_flag(resume, args)}" if kind == "claude" else ""
     # Extra `claude` arguments, already shlex-quoted token-by-token by clean_args
     # -- appended, never interpolated raw (invariant #3). Claude-only: a shell
     # session has no command of ours to pass them to.
@@ -460,8 +477,9 @@ def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = 
     if path:
         cmd += ["-c", path]
     if kind == "claude":
-        # args arrives already shlex-quoted from clean_args (invariant #3)
-        cmd.append("claude" + _CLAUDE_RESUME.get(resume, "") + (f" {args}" if args else ""))
+        # args arrives already shlex-quoted from clean_args (invariant #3), and
+        # suppresses our resume flag when it carries one of its own
+        cmd.append("claude" + resume_flag(resume, args) + (f" {args}" if args else ""))
     if host == "local":
         return cmd
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in cmd)]

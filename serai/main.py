@@ -496,10 +496,16 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
         body = {}
     targets = body.get("targets") if isinstance(body, dict) else None
     picks: dict[str, str] = {}  # host::name -> how that Claude session comes back
+    arg_picks: dict[str, str] = {}   # host::name -> extra `claude` args, if edited
     if isinstance(targets, list):
         for t in targets:
             if isinstance(t, dict):
-                picks[f"{t.get('host')}::{t.get('name')}"] = str(t.get("resume", "continue"))
+                key = f"{t.get('host')}::{t.get('name')}"
+                picks[key] = str(t.get("resume", "continue"))
+                # Only an explicitly-present key overrides the snapshot: a client
+                # that doesn't send `args` must not be read as "clear them".
+                if "args" in t:
+                    arg_picks[key] = str(t.get("args") or "")
         saved = [r for r in saved if f"{r.get('host')}::{r.get('name')}" in picks]
     known = _known_hosts()
 
@@ -520,11 +526,14 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
         resume = picks.get(f"{host}::{name}", "continue")
         if resume not in sessions.RESUME_CHOICES:
             resume = "continue"
-        # Extra `claude` args come only from the snapshot, never from the client,
-        # and are re-cleaned here so an old or hand-edited record can't smuggle
-        # anything unquoted into the command (invariant #3).
+        # Extra `claude` args: the banner may edit them per session, otherwise
+        # they come from the snapshot. Either way they are re-cleaned here, so
+        # neither a client nor an old hand-edited record can smuggle anything
+        # unquoted into the command (invariant #3).
+        key = f"{host}::{name}"
+        raw_args = arg_picks[key] if key in arg_picks else (r.get("args", "") or "")
         try:
-            extra = sessions.clean_args(r.get("args", "") or "")
+            extra = sessions.clean_args(raw_args)
         except ValueError:
             extra = ""
         argv = sessions.restore_argv(host, name, r.get("kind", "shell"),
@@ -539,6 +548,10 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
         if ok and extra:
             await loop.run_in_executor(_pool, sessions.run_send,
                                        sessions.set_args_argv(host, name, extra))
+        # An edit made in the banner is a deliberate change, including a clear --
+        # record it so the sticky rule can't resurrect the old value.
+        if ok and key in arg_picks:
+            await loop.run_in_executor(_pool, store.set_args, host, name, extra)
         return {"host": host, "name": name, "ok": bool(ok)}
 
     results = await asyncio.gather(*[recreate(r) for r in saved])

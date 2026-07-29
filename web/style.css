@@ -176,12 +176,39 @@ body {
 .restore-row-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* the row is a div now (it holds a select); the tick half stays a label */
 .restore-tick { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; cursor: pointer; }
+/* Fixed width on purpose: sized to its content it grew and shrank with the
+   selected option, so picking "continue last" visibly squeezed the session name
+   beside it and the name jumped as you changed the dropdown. */
 .restore-resume {
-  flex-shrink: 0; margin-left: 6px; font-family: var(--mono); font-size: 11px;
+  flex-shrink: 0; margin-left: 6px; width: 88px;
+  font-family: var(--mono); font-size: 11px;
   background: var(--bg); color: var(--text-dim);
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 4px; cursor: pointer;
 }
 .restore-resume:hover { color: var(--text); border-color: var(--border-st); }
+.restore-resume:disabled { opacity: .5; cursor: default; }
+/* A row that is showing its args box becomes two lines, so the box sits directly
+   under the row it belongs to rather than floating between neighbours. */
+.restore-row-2 { flex-direction: column; align-items: stretch; gap: 3px; }
+.restore-line { display: flex; align-items: center; gap: 7px; }
+.restore-args {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--accent); border-radius: 5px; padding: 2px 5px;
+  margin-left: 22px; box-sizing: border-box; width: calc(100% - 22px);
+}
+.restore-args:focus { outline: none; }
+.restore-more {
+  flex-shrink: 0; background: transparent; border: none; color: var(--faint);
+  cursor: pointer; font-size: 12px; padding: 0 3px; position: relative; line-height: 1;
+}
+.restore-more:hover, .restore-more.open { color: var(--accent); }
+/* a dot marks "this session has args" -- a truncated inline chip was unreadable
+   at the banner's width, and the full string is on the button's tooltip */
+.restore-more.has::after {
+  content: ""; position: absolute; top: -1px; right: 0;
+  width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+}
 .restore-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .restore-actions .btn { padding: 4px 10px; }
 

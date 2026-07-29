@@ -1018,6 +1018,12 @@ function updateRestoreBanner() {
 // "continue" you get *a* conversation without being told which one.
 const RESUME_CHOICES = [["resume", "resume…"], ["continue", "continue last"], ["", "fresh"]];
 const RESUME_DEFAULT = "resume";
+// Args the user has edited in the banner, and which rows have their box open.
+const restoreArgs = new Map();      // "host::name" -> edited args (absent = use the snapshot's)
+const restoreArgsOpen = new Set();  // "host::name" of rows showing their args box
+// The args are the command line: if they already say how the session comes back,
+// serai adds no flag of its own, and the row's dropdown says so.
+const argsCarryResume = (a) => /(^|\s)'?--(resume|continue)\b/.test(a || "");
 
 function renderRestoreList(missing) {
   const list = document.getElementById("restore-list");
@@ -1032,7 +1038,7 @@ function renderRestoreList(missing) {
     head.className = "restore-row restore-bulk";
     const text = document.createElement("span");
     text.className = "restore-row-text muted";
-    text.textContent = `set all ${claudeRows.length} Claude sessions to`;
+    text.textContent = `set all ${claudeRows.length} to`;   // short: the select is fixed-width now
     const sel = document.createElement("select");
     sel.className = "restore-resume";
     sel.title = "Apply one choice to every Claude session below";
@@ -1043,7 +1049,13 @@ function renderRestoreList(missing) {
     }
     sel.value = RESUME_DEFAULT;
     sel.addEventListener("change", () => {
-      for (const r of claudeRows) restoreResume.set(`${r.host}::${r.name}`, sel.value);
+      for (const r of claudeRows) {
+        const k = `${r.host}::${r.name}`;
+        // Rows whose args already say how they come back aren't ours to set --
+        // their dropdown is disabled, so silently overriding them would be a lie.
+        const a = restoreArgs.has(k) ? restoreArgs.get(k) : (r.args || "");
+        if (!argsCarryResume(a)) restoreResume.set(k, sel.value);
+      }
       renderRestoreList(missing);           // reflect it on every row
     });
     head.append(text, sel);
@@ -1065,16 +1077,40 @@ function renderRestoreList(missing) {
     tick.appendChild(cb);
     const text = document.createElement("span");
     text.className = "restore-row-text";
+    // The host is only worth the ~40px when it isn't the default -- " · local"
+    // on every row was squeezing the session name into an ellipsis.
     text.innerHTML =
       `<span class="kind">${KIND_GLYPH[r.kind] || ""}</span> ${escapeHtml(r.label || r.name)}` +
-      `<span class="mono muted"> · ${escapeHtml(r.host)}</span>`;
+      (r.host && r.host !== "local" ? `<span class="mono muted"> · ${escapeHtml(r.host)}</span>` : "");
     tick.appendChild(text);
-    row.appendChild(tick);
 
     // Only Claude sessions have anything to choose; a shell just comes back.
-    if (r.kind === "claude") {
-      const sel = document.createElement("select");
-      sel.className = "restore-resume";
+    if (r.kind !== "claude") { row.appendChild(tick); list.appendChild(row); continue; }
+
+    const args = restoreArgs.has(key) ? restoreArgs.get(key) : (r.args || "");
+    const open = restoreArgsOpen.has(key);
+
+    const more = document.createElement("button");
+    more.className = "restore-more" + (args ? " has" : "") + (open ? " open" : "");
+    more.type = "button";
+    more.textContent = "⋯";
+    more.title = args ? `claude ${args}` : "add extra claude args";
+    more.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      restoreArgsOpen.has(key) ? restoreArgsOpen.delete(key) : restoreArgsOpen.add(key);
+      renderRestoreList(missing);
+    });
+
+    const sel = document.createElement("select");
+    sel.className = "restore-resume";
+    if (argsCarryResume(args)) {
+      // the args already say how it comes back, so there is nothing to pick
+      const o = document.createElement("option");
+      o.textContent = "args";
+      sel.appendChild(o);
+      sel.disabled = true;
+      sel.title = "the args already say how this session comes back";
+    } else {
       sel.title = "How this Claude session comes back";
       for (const [value, label] of RESUME_CHOICES) {
         const o = document.createElement("option");
@@ -1083,7 +1119,30 @@ function renderRestoreList(missing) {
       }
       sel.value = restoreResume.get(key) ?? RESUME_DEFAULT;
       sel.addEventListener("change", () => restoreResume.set(key, sel.value));
-      row.appendChild(sel);
+    }
+
+    if (!open) {
+      row.append(tick, more, sel);
+    } else {
+      // two-line row: the args box belongs directly under *its own* row
+      row.classList.add("restore-row-2");
+      const line = document.createElement("div");
+      line.className = "restore-line";
+      line.append(tick, more, sel);
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "restore-args";
+      input.value = args;
+      input.placeholder = "--chrome";
+      input.spellcheck = false;
+      input.addEventListener("click", (ev) => ev.stopPropagation());
+      // re-render on change so the dot and the dropdown agree with what's typed
+      input.addEventListener("change", () => {
+        restoreArgs.set(key, input.value.trim());
+        renderRestoreList(missing);
+      });
+      input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") input.blur(); });
+      row.append(line, input);
     }
     list.appendChild(row);
   }
@@ -1093,12 +1152,19 @@ async function doResume(targets) {
   const buttons = [document.getElementById("restore-all"), document.getElementById("restore-selected")];
   buttons.forEach((b) => { b.disabled = true; });
   try {
-    const body = targets ? { targets: targets.map((r) => ({
-      host: r.host,
-      name: r.name,
-      // per-session choice; untouched rows take the same default the picker shows
-      resume: restoreResume.get(`${r.host}::${r.name}`) ?? RESUME_DEFAULT,
-    })) } : {};
+    const body = targets ? { targets: targets.map((r) => {
+      const key = `${r.host}::${r.name}`;
+      const t = {
+        host: r.host,
+        name: r.name,
+        // per-session choice; untouched rows take the same default the picker shows
+        resume: restoreResume.get(key) ?? RESUME_DEFAULT,
+      };
+      // Only send args the user actually edited -- absent means "keep what the
+      // snapshot has", which is not the same as clearing them.
+      if (restoreArgs.has(key)) t.args = restoreArgs.get(key);
+      return t;
+    }) } : {};
     const data = await (await fetch("/api/sessions/restore", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
