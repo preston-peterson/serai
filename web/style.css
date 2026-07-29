@@ -198,16 +198,28 @@ body {
   margin-left: 22px; box-sizing: border-box; width: calc(100% - 22px);
 }
 .restore-args:focus { outline: none; }
+/* A labelled pill, not a bare "⋯": the glyph read as decoration and nobody found
+   it. It says what it opens, and at 36px still costs no session name. */
 .restore-more {
-  flex-shrink: 0; background: transparent; border: none; color: var(--faint);
-  cursor: pointer; font-size: 12px; padding: 0 3px; position: relative; line-height: 1;
+  flex-shrink: 0; background: transparent; border: 1px solid var(--border);
+  color: var(--text-faint); border-radius: 4px; cursor: pointer;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase;
+  padding: 1px 5px; line-height: 1.4; position: relative;
 }
-.restore-more:hover, .restore-more.open { color: var(--accent); }
-/* a dot marks "this session has args" -- a truncated inline chip was unreadable
-   at the banner's width, and the full string is on the button's tooltip */
+.restore-more:hover, .restore-more.open { color: var(--accent); border-color: var(--accent); }
+/* a dot marks "this session already has args" -- the full string is on the
+   tooltip, since an inline chip truncated to noise at the banner's width */
 .restore-more.has::after {
-  content: ""; position: absolute; top: -1px; right: 0;
+  content: ""; position: absolute; top: -2px; right: -1px;
   width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+}
+/* Not a control: when the args carry --resume/--continue there is nothing to
+   pick, so this states what will happen. Matches the select's width so the rows
+   still line up. */
+.restore-from-args {
+  flex: none; width: 88px; margin-left: 6px; text-align: center;
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
 }
 .restore-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .restore-actions .btn { padding: 4px 10px; }

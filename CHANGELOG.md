@@ -9,6 +9,18 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.20.2]
+
+### Changed
+
+- **The restore banner's args control is a labelled `ARGS` pill**, not a bare
+  `⋯`. The glyph read as decoration and nobody found it; the pill says what it
+  opens and still costs no session name.
+- **No more disabled dropdown.** When a session's args already say how it comes
+  back, the row used to show a greyed-out `args` select — which looks like
+  something you could use. It now states the flag that will actually be applied
+  (`--resume`, `--continue`) as plain text, because there is nothing to pick.
+
 ## [2.20.1]
 
 ### Fixed

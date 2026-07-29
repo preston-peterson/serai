@@ -114,10 +114,11 @@ session is lost.
 choice of how each Claude session returns: open its resume picker (the default —
 you land in `claude --resume` and pick the conversation), continue the last one,
 or start fresh. Set them all at once from the control above the list, or override
-any single row. Each row's `⋯` opens its args, so you can change how a session
-comes back before you bring it back — a dot on `⋯` means that session already
-carries some. If the args say `--resume` or `--continue` themselves, they win and
-the dropdown says so, rather than adding a second, conflicting flag.
+any single row. Each row's **ARGS** button opens that session's args, so you can change how it
+comes back before you bring it back — a dot on the button means it already
+carries some. If the args say `--resume` or `--continue` themselves, they win —
+the row drops its dropdown and simply shows the flag it will use, rather than
+offering a choice that wouldn't be honoured or adding a second, conflicting flag.
 
 **Exit a Claude session** (`/exit`) and it doesn't just vanish — it stays on the
 board as a dimmed **resume** card. One tap reopens it in its project directory

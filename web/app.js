@@ -1030,7 +1030,10 @@ const restoreArgs = new Map();      // "host::name" -> edited args (absent = use
 const restoreArgsOpen = new Set();  // "host::name" of rows showing their args box
 // The args are the command line: if they already say how the session comes back,
 // serai adds no flag of its own, and the row's dropdown says so.
-const argsCarryResume = (a) => /(^|\s)'?--(resume|continue)\b/.test(a || "");
+// Which resume flag the args carry, if any -- shown in place of the dropdown,
+// because when the args decide it there is nothing left to pick.
+const argsResumeFlag = (a) => (String(a || "").match(/(?:^|\s)'?(--(?:resume|continue))\b/) || [])[1] || "";
+const argsCarryResume = (a) => !!argsResumeFlag(a);
 
 function renderRestoreList(missing) {
   const list = document.getElementById("restore-list");
@@ -1100,7 +1103,7 @@ function renderRestoreList(missing) {
     const more = document.createElement("button");
     more.className = "restore-more" + (args ? " has" : "") + (open ? " open" : "");
     more.type = "button";
-    more.textContent = "⋯";
+    more.textContent = "args";      // a labelled pill: "⋯" was not discoverable
     more.title = args ? `claude ${args}` : "add extra claude args";
     more.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -1108,16 +1111,19 @@ function renderRestoreList(missing) {
       renderRestoreList(missing);
     });
 
-    const sel = document.createElement("select");
-    sel.className = "restore-resume";
-    if (argsCarryResume(args)) {
-      // the args already say how it comes back, so there is nothing to pick
-      const o = document.createElement("option");
-      o.textContent = "args";
-      sel.appendChild(o);
-      sel.disabled = true;
-      sel.title = "the args already say how this session comes back";
+    // When the args say how the session comes back there is nothing left to pick,
+    // so don't render a control at all -- a disabled dropdown reads as something
+    // you could use. State the flag that will actually be applied instead.
+    const flag = argsResumeFlag(args);
+    let sel;
+    if (flag) {
+      sel = document.createElement("span");
+      sel.className = "restore-from-args";
+      sel.textContent = flag;
+      sel.title = `comes back with ${flag}, from its args`;
     } else {
+      sel = document.createElement("select");
+      sel.className = "restore-resume";
       sel.title = "How this Claude session comes back";
       for (const [value, label] of RESUME_CHOICES) {
         const o = document.createElement("option");
