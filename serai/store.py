@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 # the descriptor kept per session -- enough to recreate it, nothing sensitive
-_FIELDS = ("host", "name", "kind", "label", "path", "tags")
+_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args")
 
 # In-memory "seen live this run" tracking, for the resume-after-exit affordance.
 # Not persisted: it answers "which sessions did I just have open?", which is a
@@ -120,6 +120,11 @@ def upsert(records: list[dict]) -> None:
         # empty live tags must not clobber good stored tags (the bug this guards)
         if not rec.get("tags") and prior and prior.get("tags"):
             rec["tags"] = prior["tags"]
+        # same rule for the extra `claude` args: a session recreated without its
+        # @serai_args comes back bare, and that must not erase the stored value.
+        # A deliberate clear goes through set_args, not through a degraded poll.
+        if not rec.get("args") and prior and prior.get("args"):
+            rec["args"] = prior["args"]
         # An explicit start-in dir is authoritative over wherever the pane sits.
         # serai's own cwd is disqualified in *either* role: it is not a dir anyone
         # chose, and once it leaks into @serai_dir it would otherwise reassert
@@ -148,6 +153,19 @@ def set_tags(host: str, name: str, tags: list) -> None:
         return
     if rec.get("tags") != tags:
         rec["tags"] = tags
+        _atomic_write(data)
+
+
+def set_args(host: str, name: str, args: str) -> None:
+    """Record a deliberate change to a session's extra `claude` args (including a
+    clear) straight into the snapshot, so ``upsert``'s sticky rule can't later
+    resurrect the old value. A no-op if the session isn't snapshotted yet."""
+    data = _load()
+    rec = data.get(_key(host, name))
+    if rec is None:
+        return
+    if rec.get("args") != args:
+        rec["args"] = args
         _atomic_write(data)
 
 

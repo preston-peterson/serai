@@ -541,9 +541,11 @@ body {
 /* The row actions are visibility:hidden by default, which still reserves their
    width -- enough to overflow a 230px rail and shrink the name to nothing. Take
    them out of the flow until hover so the session name actually has room. */
-.rail .row .row-split, .rail .row .row-edit, .rail .row .row-del { display: none; }
+.rail .row .row-split, .rail .row .row-edit,
+.rail .row .row-restart, .rail .row .row-del { display: none; }
 .rail .row:hover .row-split,
 .rail .row:hover .row-edit,
+.rail .row:hover .row-restart,
 .rail .row:hover .row-del { display: inline-block; visibility: visible; }
 
 /* --- pane tabs above the terminal (mockup .ptabs/.ptab) -------------------- */
@@ -897,6 +899,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: transparent; border: none; color: var(--faint);
   font-size: 11px; cursor: pointer; visibility: hidden;
 }
+/* restart = kill and recreate; the only way a changed start dir or set of args
+   reaches a session that is already running (tmux `new -A` runs its command on
+   create only). Sits between edit and kill: consequential, but it comes back. */
+.row-restart {
+  flex-shrink: 0; padding: 0 4px;
+  background: transparent; border: none; color: var(--faint);
+  font-size: 11px; cursor: pointer; visibility: hidden;
+}
+.row-restart:hover { color: var(--accent); }
+/* one-line note under a form row (why a field doesn't apply until a restart) */
+.form-hint { font-size: .72rem; color: var(--text-faint); margin: -.2rem 0 .7rem; }
+.form-hint code { font-family: var(--mono); font-size: .95em; }
 .row-split {
   flex-shrink: 0; padding: 0 4px;
   background: transparent; border: none; color: var(--faint);

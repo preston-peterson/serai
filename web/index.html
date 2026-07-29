@@ -52,6 +52,12 @@
             <option value="resume">resume…</option>
           </select>
         </div>
+        <div class="form-row" id="ns-args-row" hidden>
+          <label for="ns-args">args</label>
+          <input id="ns-args" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="--chrome"
+                 title="Extra arguments passed to claude when this session starts" />
+        </div>
         <div class="form-actions">
           <button id="ns-cancel" class="btn" type="button">cancel</button>
           <button id="ns-submit" class="btn primary" type="button">attach</button>
@@ -328,9 +334,20 @@
                  placeholder="~/git/project"
                  title="Where the file browser opens for this session, and where it restarts after a reboot. Doesn't move a shell that's already running." />
         </div>
+        <div class="form-row" id="edit-args-row" hidden>
+          <label for="edit-args">args</label>
+          <input id="edit-args" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="--chrome --model opus"
+                 title="Extra arguments passed to claude when this session starts. Takes effect when the session is recreated — use 'save &amp; restart' to apply now." />
+        </div>
+        <p class="form-hint" id="edit-args-hint" hidden>
+          passed to <code>claude</code> on the next start · takes effect when the session is recreated
+        </p>
         <div class="form-actions">
           <button id="edit-cancel" class="btn" type="button">cancel</button>
-          <button id="edit-save" class="btn primary" type="button">save</button>
+          <button id="edit-save" class="btn" type="button">save</button>
+          <button id="edit-restart" class="btn primary" type="button" hidden
+                  title="Save, then kill and recreate the session so the new args take effect">save &amp; restart</button>
         </div>
       </div>
     </div>

@@ -9,6 +9,28 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.19.0]
+
+### Added
+
+- **Extra `claude` arguments per session.** An **args** field on a Claude
+  session — in **+ New** and in the edit dialog — passes whatever you put there
+  to `claude` when the session starts: `--chrome`, `--model opus`, and so on. It
+  lives on the session (a `@serai_args` tmux option) and is kept in the restore
+  snapshot, so a reboot brings it back with the session.
+
+  Every token is `shlex`-split and re-quoted before it reaches the command
+  string, so shell metacharacters arrive at `claude` as literal arguments and
+  never as commands — invariant #3 holds. Unbalanced quotes, `::` and control
+  characters are refused outright rather than mangled.
+
+- **Restart a session** — `⟳` on a Claude session's row, or **save & restart**
+  in the edit dialog. tmux `new -A` only runs its command when the session is
+  *created*, so a changed start dir or set of args can't reach one that's already
+  running; this kills and recreates it, coming back with `--resume`. It asks
+  first, because anything running in the session is lost. Unlike `✕` it keeps the
+  restore record.
+
 ## [2.18.3]
 
 ### Added

@@ -96,6 +96,18 @@ up as-is, rather than needing a rename.
 terminal and the file browser open there. It's stored on the session, so it
 survives you `cd`-ing elsewhere and is reused when restoring after a reboot.
 
+**Args** — a Claude session can carry extra arguments for `claude`: `--chrome`,
+`--model opus`, whatever you need. Set them in **+ New** or the edit dialog and
+they're remembered with the session, including across a reboot. They're split
+into arguments and quoted individually before they reach the command, so nothing
+you type there can run as a shell command.
+
+Both take effect when a session is *created* — tmux won't re-run a command for a
+session that already exists — so changing them on a running session needs a
+**restart**: `⟳` on its row, or **save & restart** in the edit dialog. That kills
+and recreates it (coming back with `claude --resume`), and asks first, since
+anything running in the session is lost.
+
 **After a reboot**, serai offers to bring back the sessions that were open, with a
 choice of how each Claude session returns: open its resume picker (the default —
 you land in `claude --resume` and pick the conversation), continue the last one,

@@ -29,7 +29,8 @@ from dataclasses import dataclass, field, asdict
 # field is our per-session tags, stored as a tmux user option (@serai_tags) so
 # they persist in the session itself with no external store (invariants #1/#4).
 _FMT = ("#{session_name}::#{session_attached}::#{session_activity}::#{@serai_tags}"
-        "::#{pane_current_command}::#{alternate_on}::#{@serai_dir}::#{pane_current_path}")
+        "::#{pane_current_command}::#{alternate_on}::#{@serai_args}::#{@serai_dir}"
+        "::#{pane_current_path}")
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new"]
 
 # Per-host TTL cache around remote session discovery. Local discovery is cheap
@@ -106,6 +107,8 @@ class Session:
     tags: list[str] = field(default_factory=list)  # per-session @serai_tags
     path: str = ""       # active pane's *live* cwd (used to restore after reboot)
     dir: str = ""        # configured "start in" dir (@serai_dir); "" if unset
+    args: str = ""       # extra `claude` arguments (@serai_args), already
+                         # shlex-quoted by clean_args; "" if unset
     tail: str = ""       # short preview of the pane's last lines (for board cards)
     age: float = -1.0    # seconds since the session last saw activity (-1 = unknown)
     alt: bool = False    # pane is on the alternate screen (a full-screen TUI):
@@ -277,7 +280,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
 
     sessions: list[Session] = []
     for line in out.splitlines():
-        parts = line.split("::", 7)  # bounded split: the path (last) may contain "::"
+        parts = line.split("::", 8)  # bounded split: the path (last) may contain "::"
         if len(parts) < 2:
             continue
         name, attached_flag = parts[0], parts[1]
@@ -290,8 +293,9 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         # scroll its history there moves nothing. The client uses this to pick
         # the scroll path: wheel (the app scrolls itself) vs exact tmux lines.
         alt = (parts[5] if len(parts) > 5 else "").strip() == "1"
-        start_dir = parts[6] if len(parts) > 6 else ""
-        path = parts[7] if len(parts) > 7 else ""
+        extra_args = parts[6] if len(parts) > 6 else ""
+        start_dir = parts[7] if len(parts) > 7 else ""
+        path = parts[8] if len(parts) > 8 else ""
         kind, label = _classify(name)
         lines = _capture_lines(host, name)
         # Markers only care about the recent tail; the preview wants more history
@@ -305,7 +309,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         sessions.append(
             Session(host=host, name=name, kind=kind, label=label, state=state,
                     attached=attached, tags=tags, path=path, dir=start_dir,
-                    tail=_preview(lines), alt=alt,
+                    args=extra_args, tail=_preview(lines), alt=alt,
                     age=(round(secs) if secs is not None else -1.0))
         )
     return sessions
@@ -377,7 +381,8 @@ RESUME_CHOICES = ("", "continue", "resume")
 
 
 def attach_argv(host: str, name: str, kind: str, path: str | None = None,
-                resume: str = "", mouse: bool = True, history: int | None = None) -> list[str]:
+                resume: str = "", mouse: bool = True, history: int | None = None,
+                args: str = "") -> list[str]:
     """Command that attaches to a session, creating it if absent (tmux new -A).
 
     Claude Code sessions launch `claude` in the given project directory; shells
@@ -415,6 +420,11 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     # every later restore. A shell with no start dir still takes the bare form so
     # tmux spawns its own login shell exactly as before.
     run = f"claude{_CLAUDE_RESUME.get(resume, '')}" if kind == "claude" else ""
+    # Extra `claude` arguments, already shlex-quoted token-by-token by clean_args
+    # -- appended, never interpolated raw (invariant #3). Claude-only: a shell
+    # session has no command of ours to pass them to.
+    if run and args:
+        run = f"{run} {args}"
     if path:
         # Both kinds honour a start directory. `cd` runs in the shell tmux spawns,
         # so _quote_path's expandable ~ works and no tilde reaches tmux itself;
@@ -435,7 +445,8 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     return ["ssh", *_SSH_OPTS, "-t", host, " ".join(shlex.quote(p) for p in tmux_cmd)]
 
 
-def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = "continue") -> list[str]:
+def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = "continue",
+                 args: str = "") -> list[str]:
     """Recreate a session *detached* (``tmux new -A -d``) so it exists again after
     a reboot without opening a terminal. Idempotent: ``-A`` no-ops if the session
     already exists (the command only runs on create). Claude sessions relaunch
@@ -449,7 +460,8 @@ def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = 
     if path:
         cmd += ["-c", path]
     if kind == "claude":
-        cmd.append("claude" + _CLAUDE_RESUME.get(resume, ""))
+        # args arrives already shlex-quoted from clean_args (invariant #3)
+        cmd.append("claude" + _CLAUDE_RESUME.get(resume, "") + (f" {args}" if args else ""))
     if host == "local":
         return cmd
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in cmd)]
@@ -576,6 +588,58 @@ def clean_dir(path: str) -> str:
     if "::" in p:
         raise ValueError("a start directory cannot contain '::'")
     return "" if p and _same_dir(p, own_dir()) else p
+
+
+_MAX_ARGS = 512
+
+
+def clean_args(raw: str) -> str:
+    """Normalise extra `claude` arguments, returning a shell-safe string.
+
+    This is the one place user-typed text becomes part of the command string
+    tmux hands to a shell, so it is also the only place invariant #3 could be
+    broken. The defence is to stop treating it as text: ``shlex.split`` parses it
+    into argv tokens the way a shell would, then every token is re-emitted
+    through ``shlex.quote``. ``--chrome --resume`` survives verbatim, while
+    ``; rm -rf ~`` comes back as four *quoted* tokens that reach `claude` as
+    literal arguments -- there is no unquoted metacharacter left to act on.
+
+    Rejected outright (raising ValueError, so the caller answers 400):
+      * unbalanced quotes -- shlex can't parse it, and guessing would be worse
+      * "::" -- the field separator in _FMT; it would corrupt the listing parse
+      * control characters -- the listing is line-based, so a newline would too
+
+    Idempotent: re-cleaning an already-cleaned value yields the same string,
+    which matters because the stored value is what the edit dialog shows back.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > _MAX_ARGS:
+        raise ValueError(f"extra arguments are limited to {_MAX_ARGS} characters")
+    if "::" in raw:
+        raise ValueError("extra arguments cannot contain '::'")
+    if any(ord(c) < 32 or ord(c) == 127 for c in raw):
+        raise ValueError("extra arguments cannot contain control characters")
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as exc:                     # unbalanced quote
+        raise ValueError(f"could not parse extra arguments: {exc}") from exc
+    return " ".join(shlex.quote(t) for t in tokens)
+
+
+def set_args_argv(host: str, name: str, args: str) -> list[str]:
+    """Command that stores a session's extra `claude` arguments (@serai_args).
+
+    Same shape as set_dir_argv/set_tags_argv: it lives on the session itself, so
+    it survives with no external store (invariants #1/#4). Like a start dir it
+    can't retroactively change a running session -- tmux `new -A` only runs the
+    command on create -- which is what the restart action is for.
+    """
+    tmux_cmd = ["tmux", "set-option", "-t", name, "@serai_args", args]
+    if host == "local":
+        return tmux_cmd
+    return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
 
 
 def own_dir() -> str:

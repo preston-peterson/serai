@@ -520,12 +520,25 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
         resume = picks.get(f"{host}::{name}", "continue")
         if resume not in sessions.RESUME_CHOICES:
             resume = "continue"
-        argv = sessions.restore_argv(host, name, r.get("kind", "shell"), r.get("path", "") or "", resume)
+        # Extra `claude` args come only from the snapshot, never from the client,
+        # and are re-cleaned here so an old or hand-edited record can't smuggle
+        # anything unquoted into the command (invariant #3).
+        try:
+            extra = sessions.clean_args(r.get("args", "") or "")
+        except ValueError:
+            extra = ""
+        argv = sessions.restore_argv(host, name, r.get("kind", "shell"),
+                                     r.get("path", "") or "", resume, extra)
         ok = await loop.run_in_executor(_pool, sessions.run_send, argv)
         tags = sessions.clean_tags(r.get("tags") or [])
         if ok and tags:
             await loop.run_in_executor(_pool, sessions.run_send,
                                        sessions.set_tags_argv(host, name, ",".join(tags)))
+        # Re-apply the args to the recreated session so the next poll sees them
+        # and the snapshot's sticky rule has something live to agree with.
+        if ok and extra:
+            await loop.run_in_executor(_pool, sessions.run_send,
+                                       sessions.set_args_argv(host, name, extra))
         return {"host": host, "name": name, "ok": bool(ok)}
 
     results = await asyncio.gather(*[recreate(r) for r in saved])
@@ -662,6 +675,56 @@ async def api_kill(request: Request) -> JSONResponse:
     sessions.clear_cache(host)
     await loop.run_in_executor(_pool, store.remove, host, name)  # drop from the restore snapshot
     return JSONResponse({"ok": bool(ok)})
+
+
+@app.post("/api/sessions/restart")
+async def api_restart(request: Request) -> JSONResponse:
+    """Kill a session but *keep* its restore record. Body: {host, name}.
+
+    tmux `new -A` only runs its command on create, so a change to a session's
+    extra args (or its start dir) can't reach one that is already running -- the
+    session has to be recreated. That is what this is for, and it is why it is
+    not `/api/kill`: that one calls store.remove, which would throw away the very
+    record the client needs to recreate the session from. The client attaches
+    straight afterwards, which is what brings the session back.
+    """
+    body = await request.json()
+    host = body.get("host", "local")
+    name = body.get("name") or ""
+    if host not in _known_hosts() or not name:
+        return JSONResponse({"error": "invalid target"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.kill_argv(host, name))
+    sessions.clear_cache(host)
+    return JSONResponse({"ok": bool(ok)})
+
+
+@app.post("/api/args")
+async def api_args(request: Request) -> JSONResponse:
+    """Set a session's extra `claude` arguments (the @serai_args tmux option).
+    Body: {host, name, args: "--chrome"}. Sanitised server-side by clean_args,
+    which shlex-quotes every token -- see invariant #3.
+
+    Takes effect on the session's *next* create, exactly like a start dir, so the
+    caller normally follows with /api/sessions/restart.
+    """
+    body = await request.json()
+    host = body.get("host", "local")
+    name = body.get("name") or ""
+    if host not in _known_hosts() or not name:
+        return JSONResponse({"error": "invalid target"}, status_code=400)
+    try:
+        clean = sessions.clean_args(body.get("args") or "")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(_pool, sessions.run_send,
+                                    sessions.set_args_argv(host, name, clean))
+    # Record the deliberate change (including a clear) so upsert's sticky rule
+    # doesn't resurrect the old value from the snapshot.
+    await loop.run_in_executor(_pool, store.set_args, host, name, clean)
+    sessions.clear_cache(host)
+    return JSONResponse({"ok": bool(ok), "args": clean})
 
 
 @app.post("/api/tags")
@@ -821,7 +884,19 @@ async def ws_attach(ws: WebSocket) -> None:
         except ValueError:
             pass
 
-    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history)
+    # Extra `claude` args, same deal: remembered on the session so a restore or a
+    # later recreate keeps them. clean_args quotes every token, so nothing typed
+    # here reaches the shell unquoted (invariant #3); an unparseable value is
+    # dropped rather than guessed at, since an attach must not fail on it.
+    try:
+        extra = sessions.clean_args(ws.query_params.get("args") or "")
+    except ValueError:
+        extra = ""
+    if extra:
+        asyncio.get_event_loop().run_in_executor(
+            _pool, sessions.run_send, sessions.set_args_argv(host, name, extra))
+
+    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history, extra)
 
     pid, master_fd = pty.fork()
     if pid == 0:  # child -> become the ssh/tmux process
