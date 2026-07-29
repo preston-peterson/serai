@@ -1249,9 +1249,11 @@ function renderTree() {
       const restartBtn = row.querySelector(".row-restart");
       if (restartBtn) restartBtn.onclick = (ev) => {
         ev.stopPropagation();
-        if (!confirm(`Restart ${s.label}? This kills the running session and starts it again` +
-                     (s.args ? ` with: claude ${s.args}` : "") +
-                     ". Anything running in it is lost.")) return;
+        if (!confirm(`Restart ${s.label}? This kills the running session and runs: ` +
+                     `claude${s.args ? " " + s.args : ""}\n\n` +
+                     "Anything running in it is lost." +
+                     (/(^|\s)--(resume|continue)(\s|$)/.test(s.args || "") ? ""
+                       : "\nAdd --resume to the args if you want the conversation picker."))) return;
         restartSession(s);
       };
       row.querySelector(".row-del").onclick = (ev) => { ev.stopPropagation(); killSession(s); };
@@ -2889,9 +2891,11 @@ async function saveEditSession(thenRestart) {
   // Ask before a restart: it kills the running claude. Do it while the dialog is
   // still up, so cancelling leaves you where you were rather than half-applied.
   if (thenRestart && !confirm(
-      `Restart ${s.label}? This kills the running session and starts it again` +
-      (newArgs ? ` with: claude ${newArgs}` : " with no extra args") +
-      ". Anything running in it is lost.")) return;
+      `Restart ${s.label}? This kills the running session and runs: ` +
+      `claude${newArgs ? " " + newArgs : ""}\n\n` +
+      "Anything running in it is lost." +
+      (/(^|\s)--(resume|continue)(\s|$)/.test(newArgs) ? ""
+        : "\nAdd --resume to the args if you want the conversation picker."))) return;
   closeEditSession();
   let name = s.name;
   // rename first (it changes the tmux name), then tag whatever the new name is
@@ -2962,9 +2966,11 @@ async function restartSession(s) {
   } catch { toast("could not restart the session", "error", 5000); return; }
   // Re-attach, which is what actually recreates it -- with the args in hand so
   // the new session carries them even before the next poll reports them.
+  // No resume flag of our own: the args are the whole command line, so putting
+  // `--resume` in them is how you ask for the picker. Adding one here would
+  // duplicate it for anyone who already had, and silently override "start fresh".
   attach({ host: s.host, name: s.name, kind: s.kind, label: s.label,
-           dir: s.dir, path: s.dir || s.path, args: s.args,
-           resume: s.kind === "claude" ? "resume" : "" });
+           dir: s.dir, path: s.dir || s.path, args: s.args, resume: "" });
   setTimeout(loadSessions, 800);
 }
 

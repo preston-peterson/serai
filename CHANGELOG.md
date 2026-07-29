@@ -9,6 +9,17 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.19.1]
+
+### Changed
+
+- **A restart now runs exactly what the args say**, instead of adding
+  `--resume` of its own. The args are the whole command line, so `--resume`
+  belongs in them — adding one silently duplicated it for anyone who already had
+  it, and overrode a deliberate "start fresh". The confirmation shows the command
+  line it's about to run, and points out `--resume` when the args don't mention
+  it.
+
 ## [2.19.0]
 
 ### Added
