@@ -1007,9 +1007,16 @@ function updateRestoreBanner() {
   document.getElementById("restore-msg").textContent =
     `↺ resume ${missing.length} session${missing.length === 1 ? "" : "s"} from before?`;
   document.getElementById("restore-view").textContent = restoreExpanded ? "hide" : "view";
-  document.getElementById("restore-list").hidden = !restoreExpanded;
+  const list = document.getElementById("restore-list");
+  list.hidden = !restoreExpanded;
   document.getElementById("restore-selected").hidden = !restoreExpanded;
-  if (restoreExpanded) renderRestoreList(missing);
+  // The session poll lands every REFRESH_MS and rebuilds this list from scratch.
+  // Doing that while the user is in it would throw away a half-typed args box --
+  // along with its focus and caret -- every few seconds. So leave the list alone
+  // while focus is inside it; the row handlers re-render it themselves when the
+  // user actually changes something, and the next poll after they click away
+  // picks up anything new.
+  if (restoreExpanded && !list.contains(document.activeElement)) renderRestoreList(missing);
   banner.hidden = false;
 }
 
@@ -1136,7 +1143,10 @@ function renderRestoreList(missing) {
       input.placeholder = "--chrome";
       input.spellcheck = false;
       input.addEventListener("click", (ev) => ev.stopPropagation());
-      // re-render on change so the dot and the dropdown agree with what's typed
+      // Keep every keystroke, so nothing is lost even if something does force a
+      // rebuild; only re-render on commit, when the dot and the dropdown need to
+      // catch up with what was typed.
+      input.addEventListener("input", () => restoreArgs.set(key, input.value.trim()));
       input.addEventListener("change", () => {
         restoreArgs.set(key, input.value.trim());
         renderRestoreList(missing);

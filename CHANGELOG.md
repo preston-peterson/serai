@@ -9,6 +9,16 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.20.1]
+
+### Fixed
+
+- **The restore banner's args box was wiped mid-typing.** The session poll lands
+  every 5 seconds and rebuilt the banner from scratch, so an args box you were
+  typing into lost its focus and caret under your hands. The list is now left
+  alone while focus is inside it, and every keystroke is kept, so nothing is lost
+  even if something else forces a rebuild.
+
 ## [2.20.0]
 
 ### Added
