@@ -9,6 +9,25 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.22.1]
+
+### Fixed
+
+- **A normal user saw the admin-only "users" and "network & hostname" sections**
+  in the account panel. `.acct-section` sets `display: flex`, which silently
+  defeats the HTML `hidden` attribute the code was setting — so the hiding did
+  nothing. Both sections now stay hidden, as intended.
+
+  They were never usable: every user- and network-management endpoint already
+  refused a non-admin with 403, and the fields showed placeholder text rather
+  than the real listen address or hostnames. So this was misleading, not a
+  disclosure.
+
+  A test now walks every element that the markup toggles with `hidden` and fails
+  if its class sets `display` without a matching `[hidden] { display: none }`.
+  This trap had already shipped once, as an un-dismissable restore banner; the
+  sweep also found `.mobile-only` one rule away from the same fate.
+
 ## [2.22.0]
 
 ### Added

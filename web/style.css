@@ -441,6 +441,7 @@ body {
    (~/git/tmp/serai-phone-slate.html).
    ======================================================================== */
 .mobile-only { display: none; }
+.mobile-only[hidden] { display: none; }   /* the media query below sets flex */
 .mobile-nav { display: none; }
 .rail-scrim[hidden] { display: none; }
 .sheet-scrim[hidden] { display: none; }
@@ -1069,6 +1070,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   display: flex; flex-direction: column; gap: 8px;
   border-top: 1px solid var(--border); padding-top: 10px;
 }
+/* The display:flex above defeats the hidden attribute unless this is here --
+   the same trap that once shipped an un-dismissable restore banner. It shipped
+   again here: openAccount() sets `hidden` on the users and network sections for
+   non-admins, and it did nothing, so a normal user saw both (the API still
+   refused them, and the fields showed placeholders rather than real config).
+   Keep this guard next to the rule. */
+.acct-section[hidden] { display: none; }
 .acct-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); }
 .account-popover .form-row label { width: 52px; }
 .acct-user-list { display: flex; flex-direction: column; gap: 5px; max-height: 180px; overflow: auto; }

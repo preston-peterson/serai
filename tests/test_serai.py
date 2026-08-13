@@ -9,6 +9,7 @@ Run:  pytest -q   (after: pip install -e . pytest httpx)
 
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -2299,6 +2300,30 @@ def _as_user(monkeypatch, username, admin=False):
     monkeypatch.setattr("serai.main.auth.auth_enabled", lambda: True)
     monkeypatch.setattr("serai.main.auth.verify_token",
                         lambda tok: {"username": username, "admin": admin})
+
+
+def test_every_hidden_toggled_element_survives_its_display_rule():
+    """A CSS `display:` on a class defeats the HTML `hidden` attribute, so an
+    element the JS hides stays on screen. This has shipped twice: an
+    un-dismissable restore banner, and then the account modal showing a normal
+    user the admin-only *users* and *network* sections (openAccount sets hidden
+    on both; the rule made it a no-op). Any class that is toggled with `hidden`
+    and given a display must carry its own `[hidden] { display: none }`."""
+    web = Path(__file__).resolve().parent.parent / "web"
+    html = (web / "index.html").read_text()
+    css = (web / "style.css").read_text()
+    classes = set()
+    for tag in re.findall(r"<[a-zA-Z]+[^>]*\shidden[\s/>]", html):
+        m = re.search(r'class="([^"]+)"', tag)
+        if m:
+            classes.update(m.group(1).split())
+    assert classes, "expected to find elements using the hidden attribute"
+    unguarded = [c for c in sorted(classes)
+                 if re.search(rf"^\.{re.escape(c)}\s*\{{[^}}]*display\s*:", css, re.M)
+                 and f".{c}[hidden]" not in css]
+    assert not unguarded, (
+        "these classes set display but have no [hidden] guard, so hiding them "
+        f"in JS will not work: {unguarded}")
 
 
 def test_owner_visibility_rules():
