@@ -9,6 +9,28 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.22.0]
+
+### Added
+
+- **An owner chip on board cards and rail rows**, so an admin can see at a
+  glance who created each session. Shown to admins only — everyone else sees
+  nothing but their own sessions, so a chip on each saying "you" would be noise.
+  Sessions with no recorded owner get no chip rather than a placeholder.
+
+### Changed
+
+- **Board cards no longer print "local"** on every card. It was ~40px spent
+  stating the default on every session, and without it a long name plus an owner
+  chip fits where it otherwise truncated. Remote hosts are still labelled. The
+  restore banner already worked this way.
+- **Rail rows no longer repeat the tag chip.** The group header immediately above
+  a row already names that tag, so it was the most redundant thing in a 250px
+  row — and with the owner chip added, keeping it collapsed session names to
+  `escap…`. Mobile already dropped it for the same reason.
+- The account button's tooltip says "Account & users" only for admins; everyone
+  else can just change their own password.
+
 ## [2.21.0]
 
 ### Added

@@ -568,6 +568,27 @@ body {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
+/* Who created a session. Rendered for admins only -- everyone else sees just
+   their own sessions, so a chip on each saying "you" would be noise. Muted, so
+   it reads as metadata beside the name rather than competing with the tags. */
+.bowner, .rowner {
+  flex: none; font-family: var(--mono); color: var(--text-faint);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bowner { font-size: .6rem; font-weight: 600; letter-spacing: .04em;
+          padding: .05rem .28rem; max-width: 7rem; }
+.rowner { font-size: .58rem; padding: 0 .25rem; max-width: 4.5rem; }
+/* The rail row swaps the age out for its action buttons on hover; the owner goes
+   with it, so the name keeps the width it has now. */
+.rail .row:hover .rowner { display: none; }
+/* At 250px the rail cannot fit name + owner + tags, and the name is what you are
+   actually reading -- with all three the name collapsed to "escap…". The per-row
+   tag chip gives way: the group header directly above already names that tag, so
+   it is the most redundant thing in the row. (Mobile dropped it for exactly this
+   reason; this just applies the same judgement to the desktop width.) */
+.rail .row .tags { display: none; }
+
 /* pane bar: state dot + name + host, mockup form */
 .pane-head .dot { margin-right: 2px; }
 .rail .row .rw {

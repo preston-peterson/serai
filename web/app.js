@@ -745,6 +745,10 @@ function updateAccountButton() {
     return;
   }
   btn.hidden = false;
+  // Managing users is admin-only (the section is hidden, and the API refuses),
+  // so don't promise it in the tooltip to someone who can only change their own
+  // password.
+  btn.title = authStatus.admin ? "Account & users" : "Account";
   const who = authStatus.user || "account";
   btn.textContent = who.slice(0, 2); // a round avatar, so initials only
   btn.title = `Signed in as ${who} — account & users`;
@@ -1035,6 +1039,16 @@ const restoreArgsOpen = new Set();  // "host::name" of rows showing their args b
 const argsResumeFlag = (a) => (String(a || "").match(/(?:^|\s)'?(--(?:resume|continue))\b/) || [])[1] || "";
 const argsCarryResume = (a) => !!argsResumeFlag(a);
 
+// Who owns a session, as a chip -- admins only. Everyone else sees nothing but
+// their own sessions, so a chip on every one of them saying "you" is pure noise.
+// An unowned session (made outside serai, or before ownership existed) gets no
+// chip rather than a placeholder: there is no one to name.
+function ownerChip(s, cls) {
+  const owner = s && s.owner;
+  if (!owner || !(authStatus && authStatus.admin)) return "";
+  return `<span class="${cls}" title="created by ${escapeHtml(owner)}">${escapeHtml(owner)}</span>`;
+}
+
 function renderRestoreList(missing) {
   const list = document.getElementById("restore-list");
   list.innerHTML = "";
@@ -1318,6 +1332,7 @@ function renderTree() {
         `<span class="dot ${s.state}"></span>` +
         `<span class="bkind ${s.kind === "claude" ? "cc" : ""}">${s.kind === "claude" ? "cc" : "sh"}</span>` +
         `<span class="name">${escapeHtml(s.label)}</span>` +
+        ownerChip(s, "rowner") +
         (tagsHtml ? `<span class="tags">${tagsHtml}</span>` : "") +
         `<span class="rw">${escapeHtml(s.state === "running" ? "now" : fmtAge(s.age))}</span>` +
         `<button class="row-split" title="open in a split pane (side by side)">\u25eb</button>` +
@@ -1546,7 +1561,8 @@ function renderBoard() {
       `<div class="bcard-h">` +
         `<span class="bkind cc">cc</span>` +
         `<span class="bname">${escapeHtml(s.label || s.name)}</span>` +
-        `<span class="bhost">${s.host === "local" ? "local" : escapeHtml(s.host)}</span>` +
+        ownerChip(s, "bowner") +
+        (s.host === "local" ? "" : `<span class="bhost">${escapeHtml(s.host)}</span>`) +
       `</div>` +
       `<div class="btail"><span class="d">exited · ${escapeHtml(s.path || "")}</span></div>` +
       `<div class="bcard-f">` +
@@ -1578,7 +1594,10 @@ function renderBoard() {
       `<div class="bcard-h">` +
         `<span class="bkind ${s.kind === "claude" ? "cc" : ""}">${s.kind === "claude" ? "cc" : "sh"}</span>` +
         `<span class="bname">${escapeHtml(s.label)}</span>` +
-        `<span class="bhost">${s.host === "local" ? "local" : escapeHtml(s.host)}</span>` +
+        ownerChip(s, "bowner") +
+        // "local" on every card is ~40px spent stating the default, and the
+        // owner chip needs that room. Same trade the restore banner already made.
+        (s.host === "local" ? "" : `<span class="bhost">${escapeHtml(s.host)}</span>`) +
       `</div>` +
       `<div class="btail">${s.tail ? tailHtml(s.tail, s.state) : `<span class="d">${escapeHtml(s.path || "")}</span>`}` +
         `${live ? ` <span class="caret"></span>` : ""}</div>` +

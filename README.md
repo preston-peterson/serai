@@ -232,7 +232,8 @@ require a one-time code printed to the service log, so only someone with shell
 access can create the admin.
 
 **Sessions belong to whoever created them.** You see your own; admins see all of
-them. Attaching, killing, renaming, restarting and broadcasting all refuse
+them, with an owner chip on each card and rail row so it's obvious whose is
+whose. Attaching, killing, renaming, restarting and broadcasting all refuse
 someone else's session, not just the board and the rail — a session name is easy
 to guess. Ownership lives on the session (`@serai_owner`), so it survives a
 restart and a post-reboot restore. Sessions with no recorded owner — made outside
