@@ -160,6 +160,40 @@ def _session(request: Request) -> dict | None:
     return auth.verify_token(request.cookies.get(auth.COOKIE))
 
 
+def _owns(sess: dict | None, owner: str) -> bool:
+    """May this caller see/use a session owned by `owner`?
+
+    Admins see everything -- they have to, to manage the fleet. Everyone else
+    sees only what they created. An **unowned** session ("" -- made outside
+    serai, or before ownership existed) is admin-only: those are the fleet the
+    operator already had, and a new account should start with an empty board.
+
+    This is an *organisational* boundary, not a security one. Every session runs
+    as serai's own OS user, so any account that can open a shell here can reach
+    every session regardless of what this returns. Confining users properly would
+    mean running their sessions as separate OS users.
+    """
+    if sess is None:
+        return False
+    if sess.get("admin"):
+        return True
+    return bool(owner) and owner == sess.get("username")
+
+
+async def _may_touch(sess: dict | None, host: str, name: str) -> bool:
+    """Authorise an action on a session the caller named directly.
+
+    A session that does not exist yet is fair game: the caller is creating it,
+    and ws_attach stamps them as the owner. Only a *live* session someone else
+    owns is refused.
+    """
+    loop = asyncio.get_event_loop()
+    if not await loop.run_in_executor(_pool, sessions.session_exists, host, name):
+        return True
+    owner = await loop.run_in_executor(_pool, sessions.get_owner, host, name)
+    return _owns(sess, owner)
+
+
 @app.get("/api/auth/status")
 async def api_auth_status(request: Request) -> JSONResponse:
     """Whether auth is on, configured, and the caller's session -- the SPA polls
@@ -419,8 +453,9 @@ async def api_hosts_add(request: Request) -> JSONResponse:
 
 
 @app.get("/api/sessions")
-async def api_sessions() -> JSONResponse:
+async def api_sessions(request: Request) -> JSONResponse:
     """Enumerate live sessions on local + every configured host, concurrently."""
+    sess = _session(request)
     loop = asyncio.get_event_loop()
     hosts = await loop.run_in_executor(_pool, config.parse_ssh_config)
     targets = ["local"] + [h.alias for h in hosts]
@@ -439,39 +474,54 @@ async def api_sessions() -> JSONResponse:
     saved = await loop.run_in_executor(_pool, store.saved)
     by_key = {f"{r.get('host')}::{r.get('name')}": r for r in saved}
     for rec in flat:
-        if rec.get("tags"):
-            continue
         prior = by_key.get(f"{rec['host']}::{rec['name']}")
-        if prior and prior.get("tags"):
+        if not rec.get("tags") and prior and prior.get("tags"):
             rec["tags"] = list(prior["tags"])                      # show it now
             loop.run_in_executor(                                   # and heal tmux
                 _pool, sessions.run_send,
                 sessions.set_tags_argv(rec["host"], rec["name"], ",".join(prior["tags"])))
+        # The same self-heal for the owner, and it matters more: a session that
+        # comes back without @serai_owner reads as unowned, which is admin-only,
+        # so it would disappear from the board of the user it belongs to.
+        if not rec.get("owner") and prior and prior.get("owner"):
+            rec["owner"] = prior["owner"]
+            loop.run_in_executor(
+                _pool, sessions.run_send,
+                sessions.set_owner_argv(rec["host"], rec["name"], prior["owner"]))
 
+    # The snapshot and the live-tracking are serai's own bookkeeping about the
+    # whole fleet, so they see everything regardless of who is asking. Only the
+    # *response* is scoped to the caller.
     await loop.run_in_executor(_pool, store.upsert, flat)  # snapshot for post-reboot restore
     store.mark_live([f"{s['host']}::{s['name']}" for s in flat])  # for resume-after-exit
-    return JSONResponse(flat)
+    return JSONResponse([s for s in flat if _owns(sess, s.get("owner", ""))])
 
 
 @app.get("/api/sessions/saved")
-async def api_sessions_saved() -> JSONResponse:
-    """The snapshot of sessions offered for restore after a reboot (known hosts only)."""
+async def api_sessions_saved(request: Request) -> JSONResponse:
+    """The snapshot of sessions offered for restore after a reboot (known hosts
+    only, and only the caller's own -- see _owns)."""
+    sess = _session(request)
     loop = asyncio.get_event_loop()
     saved = await loop.run_in_executor(_pool, store.saved)
     known = _known_hosts()
-    return JSONResponse([r for r in saved if r.get("host") in known])
+    return JSONResponse([r for r in saved
+                         if r.get("host") in known and _owns(sess, r.get("owner", ""))])
 
 
 @app.get("/api/sessions/exited")
-async def api_sessions_exited() -> JSONResponse:
+async def api_sessions_exited(request: Request) -> JSONResponse:
     """Claude sessions seen live earlier this run but no longer live -- offered
     on the board as one-click `claude --resume`. Distinct from /saved (the full
     post-reboot snapshot): this is the narrow "you just /exited this, resume it?"
-    case, recency-scoped so old exits don't pile up. Known hosts only."""
+    case, recency-scoped so old exits don't pile up. Known hosts only, and only
+    the caller's own."""
+    sess = _session(request)
     loop = asyncio.get_event_loop()
     exited = await loop.run_in_executor(_pool, store.recently_exited)
     known = _known_hosts()
-    return JSONResponse([r for r in exited if r.get("host") in known])
+    return JSONResponse([r for r in exited
+                         if r.get("host") in known and _owns(sess, r.get("owner", ""))])
 
 
 @app.post("/api/sessions/restore")
@@ -488,8 +538,12 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
     so it all stays argv-safe (invariant #3). Sessions that are already running
     are skipped, and every session's tags are reapplied.
     """
+    sess = _session(request)
     loop = asyncio.get_event_loop()
     saved = await loop.run_in_executor(_pool, store.saved)
+    # Restore only what the caller owns. Done here, before any target selection,
+    # so a client naming someone else's session can't reach it either.
+    saved = [r for r in saved if _owns(sess, r.get("owner", ""))]
     try:
         body = await request.json()
     except Exception:
@@ -552,6 +606,13 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
         # record it so the sticky rule can't resurrect the old value.
         if ok and key in arg_picks:
             await loop.run_in_executor(_pool, store.set_args, host, name, extra)
+        # Re-stamp the owner, or the restored session comes back unowned -- which
+        # would make it admin-only and so vanish from the board of the very user
+        # whose session it is.
+        owner = sessions.clean_owner(r.get("owner", "") or "")
+        if ok and owner:
+            await loop.run_in_executor(_pool, sessions.run_send,
+                                       sessions.set_owner_argv(host, name, owner))
         return {"host": host, "name": name, "ok": bool(ok)}
 
     results = await asyncio.gather(*[recreate(r) for r in saved])
@@ -644,11 +705,17 @@ async def api_broadcast(request: Request) -> JSONResponse:
     known = _known_hosts()
     loop = asyncio.get_event_loop()
 
+    sess = _session(request)
+
     async def deliver(t: dict) -> dict:
         host = t.get("host", "local")
         name = t.get("name") or ""
         if host not in known or not name:
             return {"host": host, "name": name, "ok": False, "error": "invalid target"}
+        # A broadcast types into a live session, so it needs the same ownership
+        # check as attaching -- otherwise it would be the way around the others.
+        if not await _may_touch(sess, host, name):
+            return {"host": host, "name": name, "ok": False, "error": "not your session"}
         argv = sessions.send_keys_argv(host, name, text)
         ok = await loop.run_in_executor(_pool, sessions.run_send, argv)
         return {"host": host, "name": name, "ok": bool(ok)}
@@ -668,6 +735,8 @@ async def api_rename(request: Request) -> JSONResponse:
     label = body.get("label") or ""
     if host not in _known_hosts() or not name:
         return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
     new_name = sessions.session_name(kind, label)
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.rename_argv(host, name, new_name))
@@ -683,6 +752,8 @@ async def api_kill(request: Request) -> JSONResponse:
     name = body.get("name") or ""
     if host not in _known_hosts() or not name:
         return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.kill_argv(host, name))
     sessions.clear_cache(host)
@@ -706,6 +777,8 @@ async def api_restart(request: Request) -> JSONResponse:
     name = body.get("name") or ""
     if host not in _known_hosts() or not name:
         return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.kill_argv(host, name))
     sessions.clear_cache(host)
@@ -726,6 +799,8 @@ async def api_args(request: Request) -> JSONResponse:
     name = body.get("name") or ""
     if host not in _known_hosts() or not name:
         return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
     try:
         clean = sessions.clean_args(body.get("args") or "")
     except ValueError as exc:
@@ -750,6 +825,8 @@ async def api_tags(request: Request) -> JSONResponse:
     tags = body.get("tags")
     if host not in _known_hosts() or not name or not isinstance(tags, list):
         return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
     clean = sessions.clean_tags(tags)
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send,
@@ -826,6 +903,8 @@ async def api_dir(request: Request) -> JSONResponse:
     name = body.get("name") or ""
     if host not in _known_hosts() or not name:
         return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
     try:
         path = sessions.clean_dir(body.get("path") or "")
     except ValueError as e:
@@ -860,7 +939,9 @@ async def ws_attach(ws: WebSocket) -> None:
 
     # The http auth middleware does not see websocket scopes, so gate here:
     # without a valid session, refuse before forking a PTY into the fleet.
-    if auth.auth_enabled() and not auth.verify_token(ws.cookies.get(auth.COOKIE)):
+    ws_sess = ({"username": None, "admin": True} if not auth.auth_enabled()
+               else auth.verify_token(ws.cookies.get(auth.COOKIE)))
+    if ws_sess is None:
         await ws.send_text("\r\n\x1b[31m[serai] not logged in -- refusing to attach\x1b[0m\r\n")
         await ws.close(code=4401)
         return
@@ -886,6 +967,25 @@ async def ws_attach(ws: WebSocket) -> None:
         await ws.close(code=4404)
         return
 
+    # Refuse someone else's live session, and claim a new one for whoever made it.
+    # `tmux new -A` would otherwise happily attach to any name that was guessed:
+    # filtering the *list* hides sessions, but only this stops them being opened.
+    # (Still an organisational boundary, not a security one -- see _owns.)
+    _loop = asyncio.get_event_loop()
+    exists = await _loop.run_in_executor(_pool, sessions.session_exists, host, name)
+    claim = ""
+    if exists:
+        if not _owns(ws_sess, await _loop.run_in_executor(_pool, sessions.get_owner, host, name)):
+            await ws.send_text("\r\n\x1b[31m[serai] that session belongs to another "
+                               "user -- refusing to attach\x1b[0m\r\n")
+            await ws.close(code=4403)
+            return
+    else:
+        # Only a session this attach *creates* is claimed, and the claim rides in
+        # the same tmux command (after `new -A`) so it can't race the create. An
+        # admin opening an unowned session must not silently take it over.
+        claim = sessions.clean_owner(ws_sess.get("username") or "")
+
     # Remember an explicit start dir on the session itself, so the file pane and a
     # post-reboot restore keep using it even after the shell cds elsewhere. Best
     # effort: tmux `new -A` only applies it on create, and a failure here must
@@ -909,7 +1009,7 @@ async def ws_attach(ws: WebSocket) -> None:
         asyncio.get_event_loop().run_in_executor(
             _pool, sessions.run_send, sessions.set_args_argv(host, name, extra))
 
-    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history, extra)
+    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history, extra, claim)
 
     pid, master_fd = pty.fork()
     if pid == 0:  # child -> become the ssh/tmux process

@@ -9,6 +9,29 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.21.0]
+
+### Added
+
+- **Sessions belong to the user who created them.** A new serai account no
+  longer opens onto everyone else's work: you see the sessions you made, and
+  admins see all of them. Ownership is recorded on the session itself
+  (`@serai_owner`), so it survives a restart and a post-reboot restore.
+
+  Sessions with no recorded owner — anything made outside serai, or before this
+  release — are visible to **admins only**, so an existing fleet stays with the
+  operator rather than appearing on a new user's board.
+
+  It isn't only the list that's filtered: attaching, killing, renaming, tagging,
+  restarting, restoring, setting a dir or args, and broadcasting all refuse a
+  session belonging to someone else, since a session name is easy to guess.
+
+  **This is an organisational boundary, not a security one.** Every session runs
+  as serai's own OS user, so any account that can open a shell can still reach
+  every session — and the file browser is unchanged, so any user can still read
+  what serai can read. Treat serai accounts as convenience separation between
+  people who already trust each other, not as a sandbox.
+
 ## [2.20.2]
 
 ### Changed

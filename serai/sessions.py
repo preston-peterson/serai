@@ -29,8 +29,8 @@ from dataclasses import dataclass, field, asdict
 # field is our per-session tags, stored as a tmux user option (@serai_tags) so
 # they persist in the session itself with no external store (invariants #1/#4).
 _FMT = ("#{session_name}::#{session_attached}::#{session_activity}::#{@serai_tags}"
-        "::#{pane_current_command}::#{alternate_on}::#{@serai_args}::#{@serai_dir}"
-        "::#{pane_current_path}")
+        "::#{pane_current_command}::#{alternate_on}::#{@serai_args}::#{@serai_owner}"
+        "::#{@serai_dir}::#{pane_current_path}")
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new"]
 
 # Per-host TTL cache around remote session discovery. Local discovery is cheap
@@ -109,6 +109,11 @@ class Session:
     dir: str = ""        # configured "start in" dir (@serai_dir); "" if unset
     args: str = ""       # extra `claude` arguments (@serai_args), already
                          # shlex-quoted by clean_args; "" if unset
+    owner: str = ""      # serai user who created it (@serai_owner). "" means
+                         # unowned -- made outside serai, or before this existed
+                         # -- and only admins see those. NOT a security boundary:
+                         # every session runs as serai's own OS user, so anyone
+                         # with a shell here can reach all of them regardless.
     tail: str = ""       # short preview of the pane's last lines (for board cards)
     age: float = -1.0    # seconds since the session last saw activity (-1 = unknown)
     alt: bool = False    # pane is on the alternate screen (a full-screen TUI):
@@ -280,7 +285,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
 
     sessions: list[Session] = []
     for line in out.splitlines():
-        parts = line.split("::", 8)  # bounded split: the path (last) may contain "::"
+        parts = line.split("::", 9)  # bounded split: the path (last) may contain "::"
         if len(parts) < 2:
             continue
         name, attached_flag = parts[0], parts[1]
@@ -294,8 +299,9 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         # the scroll path: wheel (the app scrolls itself) vs exact tmux lines.
         alt = (parts[5] if len(parts) > 5 else "").strip() == "1"
         extra_args = parts[6] if len(parts) > 6 else ""
-        start_dir = parts[7] if len(parts) > 7 else ""
-        path = parts[8] if len(parts) > 8 else ""
+        owner = parts[7] if len(parts) > 7 else ""
+        start_dir = parts[8] if len(parts) > 8 else ""
+        path = parts[9] if len(parts) > 9 else ""
         kind, label = _classify(name)
         lines = _capture_lines(host, name)
         # Markers only care about the recent tail; the preview wants more history
@@ -309,7 +315,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         sessions.append(
             Session(host=host, name=name, kind=kind, label=label, state=state,
                     attached=attached, tags=tags, path=path, dir=start_dir,
-                    args=extra_args, tail=_preview(lines), alt=alt,
+                    args=extra_args, owner=owner, tail=_preview(lines), alt=alt,
                     age=(round(secs) if secs is not None else -1.0))
         )
     return sessions
@@ -399,7 +405,7 @@ def resume_flag(resume: str, args: str = "") -> str:
 
 def attach_argv(host: str, name: str, kind: str, path: str | None = None,
                 resume: str = "", mouse: bool = True, history: int | None = None,
-                args: str = "") -> list[str]:
+                args: str = "", owner: str = "") -> list[str]:
     """Command that attaches to a session, creating it if absent (tmux new -A).
 
     Claude Code sessions launch `claude` in the given project directory; shells
@@ -448,6 +454,12 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
         # a shell then `exec`s so the session behaves like an ordinary login shell.
         run = f"cd {_quote_path(path)} && {run or 'exec ${SHELL:-/bin/sh}'}"
     tmux_cmd += ["new", "-A", "-s", name] + ([run] if run else [])
+
+    # Claim the session for the serai user creating it, in the same command as
+    # the `new -A` so nothing can observe it unowned in between. Only passed when
+    # this attach is what creates the session -- see ws_attach.
+    if owner:
+        tmux_cmd += [";", "set-option", "-t", name, "@serai_owner", clean_owner(owner)]
 
     tmux_cmd += [";", "set-option", "-t", name, "mouse", "on" if mouse else "off"]
     # Publish copy-mode selections as OSC 52 (needs the outer terminal's Ms cap;
@@ -658,6 +670,44 @@ def set_args_argv(host: str, name: str, args: str) -> list[str]:
     if host == "local":
         return tmux_cmd
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
+
+
+_OWNER_UNSAFE = re.compile(r"[^A-Za-z0-9_.@-]+")
+
+
+def clean_owner(name: str) -> str:
+    """Sanitise a serai username before it becomes a tmux option value.
+
+    Usernames come from our own store, but this is defence in depth on the same
+    principle as clean_tags: the value is written with `tmux set-option` and read
+    back through the `::`-joined listing, so anything outside a conservative
+    charset (which would break the parse) is dropped rather than escaped.
+    """
+    return _OWNER_UNSAFE.sub("", (name or "").strip())[:64]
+
+
+def set_owner_argv(host: str, name: str, owner: str) -> list[str]:
+    """Command that records which serai user a session belongs to (@serai_owner).
+
+    Set once, when serai creates the session. Same shape as the other setters, so
+    it lives on the session itself with no external store (invariants #1/#4).
+    """
+    tmux_cmd = ["tmux", "set-option", "-t", name, "@serai_owner", clean_owner(owner)]
+    if host == "local":
+        return tmux_cmd
+    return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
+
+
+def get_owner(host: str, name: str) -> str:
+    """Read a live session's @serai_owner, or "" if unset or absent.
+
+    Used to authorise an action on a session the caller named directly (attach,
+    kill, rename...), where there is no listing row to consult.
+    """
+    argv = ["tmux", "show-options", "-t", name, "-v", "@serai_owner"]
+    if host != "local":
+        argv = ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in argv)]
+    return (_run(argv) or "").strip()
 
 
 def own_dir() -> str:

@@ -231,6 +231,19 @@ If that window worries you, `SERAI_SETUP_CODE=1` makes the first-run screen
 require a one-time code printed to the service log, so only someone with shell
 access can create the admin.
 
+**Sessions belong to whoever created them.** You see your own; admins see all of
+them. Attaching, killing, renaming, restarting and broadcasting all refuse
+someone else's session, not just the board and the rail — a session name is easy
+to guess. Ownership lives on the session (`@serai_owner`), so it survives a
+restart and a post-reboot restore. Sessions with no recorded owner — made outside
+serai, or before this existed — are visible to admins only, so an existing fleet
+doesn't land on a new user's board.
+
+> **This is organisational separation, not a sandbox.** Every session runs as
+> serai's own OS user, so anyone who can open a shell in serai can reach every
+> session on the host regardless, and the file browser is not scoped at all.
+> Give accounts to people you'd already trust with a shell on that machine.
+
 Passwords are stored only as **scrypt hashes** in `~/.config/serai/users.json`;
 sessions are HMAC-signed, httpOnly cookies. Locked out? `python -m serai.auth add
 <user> --admin` works from the host shell. For a trusted localhost, `SERAI_AUTH=off`.

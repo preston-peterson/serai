@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 # the descriptor kept per session -- enough to recreate it, nothing sensitive
-_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args")
+_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args", "owner")
 
 # In-memory "seen live this run" tracking, for the resume-after-exit affordance.
 # Not persisted: it answers "which sessions did I just have open?", which is a
@@ -125,6 +125,12 @@ def upsert(records: list[dict]) -> None:
         # A deliberate clear goes through set_args, not through a degraded poll.
         if not rec.get("args") and prior and prior.get("args"):
             rec["args"] = prior["args"]
+        # ...and for the owner. A session recreated without its @serai_owner must
+        # not silently become unowned, which would hide it from the user whose
+        # session it is. Ownership is only ever set at creation, so there is no
+        # "deliberate clear" path to respect here.
+        if not rec.get("owner") and prior and prior.get("owner"):
+            rec["owner"] = prior["owner"]
         # An explicit start-in dir is authoritative over wherever the pane sits.
         # serai's own cwd is disqualified in *either* role: it is not a dir anyone
         # chose, and once it leaks into @serai_dir it would otherwise reassert

@@ -376,7 +376,7 @@ def test_pty_websocket_bridge(monkeypatch):
     monkeypatch.setattr(
         sessions,
         "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="": [
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": [
             "python3", "-u", "-c",
             'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
         ],
@@ -406,7 +406,7 @@ def test_pty_websocket_bridge(monkeypatch):
 def _ws_close_code(monkeypatch, exists):
     # attach to a program that exits immediately, so the PTY EOFs and _close runs
     monkeypatch.setattr(sessions, "attach_argv",
-                        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="": ["python3", "-u", "-c", "print('bye')"])
+                        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": ["python3", "-u", "-c", "print('bye')"])
     monkeypatch.setattr(sessions, "session_exists", lambda host, name: exists)
     with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
         for _ in range(20):
@@ -803,7 +803,7 @@ def test_set_dir_argv_and_clean_dir():
 def test_start_dir_parsed_from_listing(monkeypatch):
     # @serai_dir rides the listing next to the live cwd; both reach the Session
     now = int(time.time())
-    listing = f"shell-x::0::{now}::prod::bash::0::::~/git/proj::/home/u/elsewhere\n"
+    listing = f"shell-x::0::{now}::prod::bash::0::::::~/git/proj::/home/u/elsewhere\n"
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
             return listing
@@ -870,11 +870,11 @@ def test_state_and_tail_from_listing(monkeypatch):
     now = int(time.time())
     listing = (
         # name::attached::activity::tags::command::@serai_dir::path (dir empty here)
-        f"cc-working::0::{now}::::node::0::::::/home/u/app\n"        # "esc to interrupt" -> working
-        f"cc-recent::0::{now - 60}::::node::0::::::/home/u/app\n"    # parked at prompt, recent -> done
-        f"cc-stale::0::{now - 99999}::::node::0::::::/home/u/app\n"  # dormant cc -> idle
-        f"shell-run::0::{now - 99999}::::npm::0::::::/home/u/app\n"  # process running -> working
-        f"shell-idle::0::{now - 99999}::::bash::0::::::/home/u/app\n"# quiet shell at prompt -> idle
+        f"cc-working::0::{now}::::node::0::::::::/home/u/app\n"        # "esc to interrupt" -> working
+        f"cc-recent::0::{now - 60}::::node::0::::::::/home/u/app\n"    # parked at prompt, recent -> done
+        f"cc-stale::0::{now - 99999}::::node::0::::::::/home/u/app\n"  # dormant cc -> idle
+        f"shell-run::0::{now - 99999}::::npm::0::::::::/home/u/app\n"  # process running -> working
+        f"shell-idle::0::{now - 99999}::::bash::0::::::::/home/u/app\n"# quiet shell at prompt -> idle
     )
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
@@ -2269,7 +2269,7 @@ def test_args_parsed_from_listing_without_shifting_the_path(monkeypatch):
     """@serai_args sits *before* @serai_dir precisely because the pane path must
     stay the last field -- it can contain '::'. Prove both still land right."""
     now = int(time.time())
-    listing = f"cc-x::0::{now}::prod::node::0::--chrome::~/git/proj::/home/u/we::ird\n"
+    listing = f"cc-x::0::{now}::prod::node::0::--chrome::::~/git/proj::/home/u/we::ird\n"
     monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6: listing)
     monkeypatch.setattr(sessions, "_capture_lines", lambda host, name: [])
     s = sessions.list_sessions("local")[0]
@@ -2292,6 +2292,96 @@ def test_upsert_keeps_stored_args_when_a_session_comes_back_bare(tmp_path, monke
     store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
                    "path": "/home/u/git/proj", "tags": [], "args": ""}])
     assert store.saved()[0]["args"] == ""
+
+
+def _as_user(monkeypatch, username, admin=False):
+    """Make every request look like it came from this serai user."""
+    monkeypatch.setattr("serai.main.auth.auth_enabled", lambda: True)
+    monkeypatch.setattr("serai.main.auth.verify_token",
+                        lambda tok: {"username": username, "admin": admin})
+
+
+def test_owner_visibility_rules():
+    from serai.main import _owns
+    admin = {"username": "alice", "admin": True}
+    bob = {"username": "bob", "admin": False}
+    assert _owns(admin, "") and _owns(admin, "bob"), "an admin sees everything"
+    assert _owns(bob, "bob")
+    assert not _owns(bob, "alice"), "another user's session is hidden"
+    assert not _owns(bob, ""), "unowned is admin-only -- the pre-existing fleet"
+    assert not _owns(None, "bob"), "no session, no visibility"
+
+
+def test_sessions_list_is_scoped_to_the_caller(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    mine = sessions.Session(host="local", name="cc-mine", kind="claude", label="mine",
+                            state="idle", attached=False, owner="bob")
+    theirs = sessions.Session(host="local", name="cc-theirs", kind="claude", label="theirs",
+                              state="idle", attached=False, owner="alice")
+    legacy = sessions.Session(host="local", name="cc-legacy", kind="claude", label="legacy",
+                              state="idle", attached=False, owner="")
+    monkeypatch.setattr("serai.main.sessions.list_sessions",
+                        lambda t: [mine, theirs, legacy] if t == "local" else [])
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: True)
+
+    _as_user(monkeypatch, "bob")
+    names = [r["name"] for r in TestClient(app).get("/api/sessions").json()]
+    assert names == ["cc-mine"], "bob sees only his own; unowned stays admin-only"
+
+    _as_user(monkeypatch, "alice", admin=True)
+    names = sorted(r["name"] for r in TestClient(app).get("/api/sessions").json())
+    assert names == ["cc-legacy", "cc-mine", "cc-theirs"], "the admin sees the fleet"
+
+    # ...but the snapshot still tracked every session, not just the visible ones
+    assert sorted(r["name"] for r in store.saved()) == ["cc-legacy", "cc-mine", "cc-theirs"]
+
+
+def test_endpoints_refuse_another_users_session(monkeypatch, tmp_path):
+    """Hiding a session from the list is not enough on its own -- the name is
+    guessable, so the mutating endpoints check ownership too."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: True)
+    monkeypatch.setattr("serai.main.sessions.get_owner", lambda h, n: "alice")
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: True)
+    _as_user(monkeypatch, "bob")
+    client = TestClient(app)
+    body = {"host": "local", "name": "cc-alice"}
+    for path, extra in [("/api/kill", {}), ("/api/sessions/restart", {}),
+                        ("/api/args", {"args": "--chrome"}), ("/api/tags", {"tags": ["x"]}),
+                        ("/api/dir", {"path": "/tmp"}),
+                        ("/api/rename", {"kind": "claude", "label": "pwned"})]:
+        r = client.post(path, json={**body, **extra})
+        assert r.status_code == 403, f"{path} should refuse: {r.status_code}"
+    # a broadcast types into a live session, so it is checked the same way
+    r = client.post("/api/broadcast", json={"text": "echo hi", "targets": [body]})
+    assert r.json()["sent"] == 0 and "not your session" in str(r.json())
+
+
+def test_a_new_session_is_claimed_by_its_creator():
+    """The claim rides in the same tmux command as `new -A`, so nothing can
+    observe the session unowned in between."""
+    argv = sessions.attach_argv("local", "cc-x", "claude", owner="bob")
+    joined = " ".join(argv)
+    assert "@serai_owner" in joined and "bob" in joined
+    assert joined.index("new") < joined.index("@serai_owner"), "claim comes after create"
+    # no owner passed (attaching to something that already exists) -> no claim
+    assert "@serai_owner" not in " ".join(sessions.attach_argv("local", "cc-x", "claude"))
+    # usernames are sanitised before becoming a tmux option value
+    assert sessions.clean_owner("bob; rm -rf ~") == "bobrm-rf"
+    assert sessions.clean_owner("a::b") == "ab", "the _FMT separator can't survive"
+
+
+def test_upsert_keeps_a_stored_owner_when_a_session_comes_back_bare(tmp_path, monkeypatch):
+    """Fifth field to need the rule, designed in: a session recreated without its
+    @serai_owner must not become unowned, which would hide it from its owner."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": [], "args": "", "owner": "bob"}])
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": [], "args": "", "owner": ""}])
+    assert store.saved()[0]["owner"] == "bob"
 
 
 def test_args_win_over_the_resume_dropdown():
@@ -2468,8 +2558,8 @@ def test_alternate_screen_flag_parsed_without_shifting_the_path(monkeypatch):
     scrolls itself) instead of tmux copy-mode, which there is a no-op. The path
     stays the LAST field, so adding this must not shift it."""
     now = int(time.time())
-    listing = (f"shell-tui::0::{now}::prod::less::1::::~/git/proj::/home/u/app\n"
-               f"shell-plain::0::{now}::::bash::0::::~/git/proj::/home/u/app\n")
+    listing = (f"shell-tui::0::{now}::prod::less::1::::::~/git/proj::/home/u/app\n"
+               f"shell-plain::0::{now}::::bash::0::::::~/git/proj::/home/u/app\n")
     monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6:
                         listing if "list-sessions" in argv else "")
     by = {s.name: s for s in sessions._list_sessions_uncached("local")}
