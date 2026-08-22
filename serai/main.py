@@ -1057,10 +1057,18 @@ async def ws_attach(ws: WebSocket) -> None:
         os._exit(1)
 
     loop = asyncio.get_event_loop()
+    # Non-blocking so a TUI that doesn't drain stdin (paste it doesn't
+    # understand, a stuck CSI parse) can't freeze the event loop on os.write
+    # — which is "paste, then typing dies".
+    os.set_blocking(master_fd, False)
+    write_buf = bytearray()
+    watching_write = False
 
     def _on_readable() -> None:
         try:
             data = os.read(master_fd, 65536)
+        except BlockingIOError:
+            return
         except OSError:
             data = b""
         if not data:
@@ -1068,6 +1076,24 @@ async def ws_attach(ws: WebSocket) -> None:
             asyncio.ensure_future(_close())
             return
         asyncio.ensure_future(ws.send_bytes(data))
+
+    def _flush_write() -> None:
+        nonlocal watching_write
+        while write_buf:
+            try:
+                n = os.write(master_fd, write_buf)
+            except BlockingIOError:
+                break
+            except OSError:
+                write_buf.clear()
+                break
+            del write_buf[:n]
+        if write_buf and not watching_write:
+            loop.add_writer(master_fd, _flush_write)
+            watching_write = True
+        elif not write_buf and watching_write:
+            loop.remove_writer(master_fd)
+            watching_write = False
 
     async def _close() -> None:
         try:
@@ -1095,7 +1121,8 @@ async def ws_attach(ws: WebSocket) -> None:
             if msg["type"] == "websocket.disconnect":
                 break
             if msg.get("bytes") is not None:
-                os.write(master_fd, msg["bytes"])
+                write_buf.extend(msg["bytes"])
+                _flush_write()
             elif msg.get("text") is not None:
                 # control frames: {"resize": {"rows": R, "cols": C}}
                 #                 {"scroll": {"lines": N}}   (+ back, - forward)
@@ -1127,6 +1154,8 @@ async def ws_attach(ws: WebSocket) -> None:
     finally:
         if ping_task is not None:
             ping_task.cancel()
+        if watching_write:
+            loop.remove_writer(master_fd)
         loop.remove_reader(master_fd)
         try:
             os.kill(pid, signal.SIGTERM)

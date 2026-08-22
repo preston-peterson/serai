@@ -88,18 +88,42 @@ function sendResizeAll() { panes.forEach(paneSendResize); }
 // xterm renders to a canvas (no native copy) and Ctrl+Shift+C is the browser's
 // dev-tools shortcut, so wire the clipboard ourselves. Copy-on-select is the
 // reliable path (no shortcut collision); Ctrl+Insert / Ctrl+Shift+V / Shift+
-// Insert and a right-click menu also work. Clipboard needs a secure context --
-// serai is HTTPS (and localhost), so it's available.
+// Insert and a right-click menu also work. Native Ctrl+V is handled via the
+// paste event (clipboardData), which does not need the clipboard-read
+// permission that navigator.clipboard.readText() asks for on a remote origin.
+function paneOnAltScreen(p) {
+  const t = p && p.active;
+  if (!t) return false;
+  const s = (sessionList || []).find((x) => x.host === t.host && x.name === t.name);
+  return !!(s && s.alt);
+}
 function paneCopy(p) {
   const sel = p.term.getSelection();
   if (sel && navigator.clipboard) navigator.clipboard.writeText(sel).catch(() => {});
   return !!sel;
 }
+function paneInsertPaste(p, text) {
+  text = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!text || !p.ws || p.ws.readyState !== WebSocket.OPEN) return;
+  // Never term.paste(): that wraps in CSI 200~/201~ when the parent shell
+  // enabled bracketed paste, and grok (and other TUIs) then sit in that
+  // sequence and swallow every later keystroke. Bytes on the PTY, once.
+  // Ctrl+V and the paste event can both fire; skip a duplicate.
+  const now = Date.now();
+  if (p._lastPaste === text && now - (p._lastPasteAt || 0) < 400) return;
+  p._lastPaste = text;
+  p._lastPasteAt = now;
+  p.ws.send(new TextEncoder().encode(text));
+}
 async function panePaste(p) {
   try {
     const text = await navigator.clipboard.readText();
-    if (text) p.term.paste(text);
-  } catch { /* clipboard blocked or empty */ }
+    if (text) paneInsertPaste(p, text);
+  } catch {
+    if (!p._lastPasteAt || Date.now() - p._lastPasteAt > 400) {
+      toast("could not read clipboard — try Ctrl+V, or allow clipboard access", "warn", 5000);
+    }
+  }
 }
 // Position a fixed context menu at the pointer, flipping above/left of it when
 // it would overflow the viewport (fixed elements never scroll into view, so an
@@ -228,16 +252,6 @@ function createPane() {
   // Re-measure this if the wheel path changes; the ratio is the whole feel.
   const LINES_PER_NOTCH = 4;
 
-  // Is this pane showing a full-screen app (the alternate screen)? Those have no
-  // tmux scrollback, so a tmux-side scroll is a no-op there and the wheel must be
-  // used instead. Read from the polled session list, which carries `alt`.
-  function paneOnAltScreen(pane) {
-    const t = pane && pane.active;
-    if (!t) return false;
-    const s = (sessionList || []).find((x) => x.host === t.host && x.name === t.name);
-    return !!(s && s.alt);
-  }
-
   function enableTouchScroll(pane) {
     const surface = pane.termEl;
     let lastY = null, lastX = null, acc = 0, mode = null;   // mode: "scroll" | "ignore"
@@ -348,6 +362,17 @@ function createPane() {
   t.onData((d) => {
     if (p.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(new TextEncoder().encode(d));
   });
+  // Native paste (Ctrl+V on Windows, Cmd+V). clipboardData is on the event, so
+  // this works on a remote origin without the clipboard-read permission that
+  // the right-click path needs. Capture so xterm doesn't also paste.
+  termEl.addEventListener("paste", (e) => {
+    const cd = e.clipboardData;
+    const text = cd && (cd.getData("text/plain") || cd.getData("text"));
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    paneInsertPaste(p, text);
+  }, true);
   // auto-copy a selection when the mouse is released ("copy on select")
   t.element.addEventListener("mouseup", () => { paneCopy(p); });
   enableTouchScroll(p);
@@ -359,7 +384,14 @@ function createPane() {
       if (paneCopy(p)) { e.preventDefault(); return false; }
       return true; // nothing selected -> let Ctrl+C through (SIGINT)
     }
-    // paste: Ctrl+Shift+V or Shift+Insert
+    // Ctrl+V must not reach the PTY as ^V (quoted-insert) — grok then waits
+    // forever and typing dies. return false so xterm doesn't emit it; do not
+    // preventDefault or the paste event (clipboardData, no extra permission)
+    // is cancelled in some browsers.
+    if (ctrl && !shift && e.code === "KeyV") {
+      panePaste(p);
+      return false;
+    }
     if ((ctrl && shift && e.code === "KeyV") || (shift && !ctrl && e.code === "Insert")) {
       e.preventDefault(); panePaste(p); return false;
     }

@@ -9,6 +9,20 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.23.1]
+
+### Fixed
+
+- **Paste into grok (in a shell, from another machine) did nothing, then
+  typing died.** Ctrl+V was still reaching the PTY as `^V` (quoted-insert),
+  so grok waited on a control sequence and ate every later key. `term.paste()`
+  also wrapped the clipboard in bracketed-paste (`CSI 200~/201~`) when the
+  parent shell had that mode on; grok doesn't close that sequence, same freeze.
+  And a TUI that doesn't drain stdin made `os.write` on the PTY block the
+  whole attach loop. Ctrl+V is swallowed by xterm (the paste event carries
+  the text), paste is raw bytes on the websocket, and PTY writes are
+  non-blocking.
+
 ## [2.23.0]
 
 ### Changed
