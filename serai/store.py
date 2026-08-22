@@ -1,14 +1,12 @@
-"""Persist the set of open sessions so they can be recreated after a reboot.
+"""Persist saved session profiles so they can be started again on purpose.
 
-tmux sessions die when the machine reboots -- there is nothing to reconnect to
-afterward -- so serai keeps a snapshot of what was open (host, name, kind,
-label, working dir, tags) and can recreate them on demand. Stored as JSON under
-the config dir (``~/.config/serai/sessions.json``, matching auth/settings); it
-holds only session *descriptors*, never any credentials (invariant #1).
-
-The snapshot is updated from live discovery and only ever *adds or updates*
-entries -- it never drops one just because a session went missing, since that is
-exactly the reboot case we restore. Explicit kills call :func:`remove`.
+A live tmux session is an instance; this file is the *profile* -- host, name,
+kind, label, dir, tags, args, owner -- of sessions the operator meant to keep.
+Creating or seeing a session upserts a profile; an explicit kill/forget
+(:func:`remove`) drops it. A session that merely vanishes (``/exit``, reboot)
+keeps its profile, so resume is on demand from + New / the palette, not a
+nag. Stored as JSON under the config dir (``~/.config/serai/sessions.json``);
+descriptors only, never credentials (invariant #1).
 """
 
 from __future__ import annotations
@@ -176,10 +174,15 @@ def set_args(host: str, name: str, args: str) -> None:
 
 
 def remove(host: str, name: str) -> None:
-    """Drop a session from the snapshot (called on an explicit kill)."""
+    """Drop a profile (called on an explicit kill / forget)."""
     data = _load()
     if data.pop(_key(host, name), None) is not None:
         _atomic_write(data)
+
+
+def get(host: str, name: str) -> dict | None:
+    """The saved profile for ``host``/``name``, or None."""
+    return _load().get(_key(host, name))
 
 
 def saved() -> list[dict]:

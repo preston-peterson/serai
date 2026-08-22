@@ -4,6 +4,7 @@ const KIND_GLYPH = { claude: "\u2726", shell: "\u276f" }; // ✦  ❯
 const REFRESH_MS = 5000;
 const MAX_REATTACH = 6;   // consecutive failed reattaches before giving up
 const STABLE_MS = 6000;   // a session must stay up this long to count as healthy
+const WS_PING_MS = 20000; // keepalive; an idle TUI otherwise dies on a NAT/idle cut
 
 let hosts = [];
 let sessionList = [];
@@ -200,7 +201,7 @@ function createPane() {
   const p = {
     el, title: el.querySelector(".pane-title"), termEl, term: t, fit: f,
     ws: null, active: null, attachGen: 0,
-    reconnectAttempts: 0, reconnectTimer: null, stableTimer: null,
+    reconnectAttempts: 0, reconnectTimer: null, stableTimer: null, pingTimer: null,
   };
 
   // Drag to scroll, on touch.
@@ -960,84 +961,31 @@ async function loadSessions() {
   if (spin) spin.classList.add("hidden");
   renderWorkspaces();
   renderTree();
-  loadSavedSessions(); // refresh the post-reboot restore banner
-  loadExitedSessions(); // refresh the resume-after-exit cards
+  loadSavedSessions(); // profiles for + New and the palette (not a nag)
 }
 
-// Claude sessions that were open a moment ago and have since exited (a `/exit`
-// leaves the tmux session gone). The board shows them as dimmed "resume" cards
-// so you can drop back into `claude --resume` and pick the conversation.
-let exitedSessions = [];
-async function loadExitedSessions() {
-  try {
-    const r = await (await fetch("/api/sessions/exited")).json();
-    // a session that is live again (resumed elsewhere) must not linger here
-    const live = new Set(sessionList.map((s) => `${s.host}::${s.name}`));
-    exitedSessions = (Array.isArray(r) ? r : [])
-      .filter((s) => !live.has(`${s.host}::${s.name}`) && !exitedDismissed.has(`${s.host}::${s.name}`));
-  } catch { exitedSessions = []; }
-  renderBoard();
-}
-const exitedDismissed = new Set(); // "host::name" hidden for this page's lifetime
-
-// --- resume sessions after a reboot -----------------------------------------
-// serai snapshots open sessions server-side; when saved sessions aren't running
-// (typically a reboot killed the tmux server) a sidebar banner offers to bring
-// them back: "view" expands the list to pick individual ones, or resume all.
+// Saved profiles. Creating a session upserts one; ✕ / forget drops it; /exit
+// and reboot keep it. Resume is on demand from + New / the palette — the board
+// and rail only show what's live.
 let savedSessions = [];
-let restoreDismissed = false;
-let restoreExpanded = false;
-const restoreChecked = new Map(); // "host::name" -> keep checkbox state across re-renders
-const restoreResume = new Map();  // "host::name" -> "" | "continue" | "resume", per Claude session
 
 async function loadSavedSessions() {
   try {
     const r = await (await fetch("/api/sessions/saved")).json();
     savedSessions = Array.isArray(r) ? r : [];
   } catch { savedSessions = []; }
-  updateRestoreBanner();
 }
 
-function missingSaved() {
+function savedNotLive() {
   const running = new Set(sessionList.map((s) => `${s.host}::${s.name}`));
-  return savedSessions.filter((r) => !running.has(`${r.host}::${r.name}`));
+  return (savedSessions || []).filter((r) => !running.has(`${r.host}::${r.name}`));
 }
 
-function updateRestoreBanner() {
-  const banner = document.getElementById("restore-banner");
-  if (!banner) return;
-  const missing = missingSaved();
-  if (!missing.length || restoreDismissed) { banner.hidden = true; return; }
-  document.getElementById("restore-msg").textContent =
-    `↺ resume ${missing.length} session${missing.length === 1 ? "" : "s"} from before?`;
-  document.getElementById("restore-view").textContent = restoreExpanded ? "hide" : "view";
-  const list = document.getElementById("restore-list");
-  list.hidden = !restoreExpanded;
-  document.getElementById("restore-selected").hidden = !restoreExpanded;
-  // The session poll lands every REFRESH_MS and rebuilds this list from scratch.
-  // Doing that while the user is in it would throw away a half-typed args box --
-  // along with its focus and caret -- every few seconds. So leave the list alone
-  // while focus is inside it; the row handlers re-render it themselves when the
-  // user actually changes something, and the next poll after they click away
-  // picks up anything new.
-  if (restoreExpanded && !list.contains(document.activeElement)) renderRestoreList(missing);
-  banner.hidden = false;
+// tmux session name from kind + label. Must match sessions.session_name.
+function sessionName(kind, label) {
+  const safe = String(label || "").trim().replace(/[^A-Za-z0-9_.-]/g, "-") || "session";
+  return (kind === "claude" ? "cc-" : "shell-") + safe;
 }
-
-// How a Claude session comes back, and the labels for the picker. "resume" is
-// the default because it lands you in claude's own conversation picker: with
-// "continue" you get *a* conversation without being told which one.
-const RESUME_CHOICES = [["resume", "resume…"], ["continue", "continue last"], ["", "fresh"]];
-const RESUME_DEFAULT = "resume";
-// Args the user has edited in the banner, and which rows have their box open.
-const restoreArgs = new Map();      // "host::name" -> edited args (absent = use the snapshot's)
-const restoreArgsOpen = new Set();  // "host::name" of rows showing their args box
-// The args are the command line: if they already say how the session comes back,
-// serai adds no flag of its own, and the row's dropdown says so.
-// Which resume flag the args carry, if any -- shown in place of the dropdown,
-// because when the args decide it there is nothing left to pick.
-const argsResumeFlag = (a) => (String(a || "").match(/(?:^|\s)'?(--(?:resume|continue))\b/) || [])[1] || "";
-const argsCarryResume = (a) => !!argsResumeFlag(a);
 
 // Who owns a session, as a chip -- admins only. Everyone else sees nothing but
 // their own sessions, so a chip on every one of them saying "you" is pure noise.
@@ -1048,178 +996,6 @@ function ownerChip(s, cls) {
   if (!owner || !(authStatus && authStatus.admin)) return "";
   return `<span class="${cls}" title="created by ${escapeHtml(owner)}">${escapeHtml(owner)}</span>`;
 }
-
-function renderRestoreList(missing) {
-  const list = document.getElementById("restore-list");
-  list.innerHTML = "";
-
-  // Set-them-all control. With a couple of dozen sessions, setting each row's
-  // dropdown by hand is the tedious part; this writes every row at once and
-  // leaves each still individually editable afterwards.
-  const claudeRows = missing.filter((r) => r.kind === "claude");
-  if (claudeRows.length > 1) {
-    const head = document.createElement("div");
-    head.className = "restore-row restore-bulk";
-    const text = document.createElement("span");
-    text.className = "restore-row-text muted";
-    text.textContent = `set all ${claudeRows.length} to`;   // short: the select is fixed-width now
-    const sel = document.createElement("select");
-    sel.className = "restore-resume";
-    sel.title = "Apply one choice to every Claude session below";
-    for (const [value, label] of RESUME_CHOICES) {
-      const o = document.createElement("option");
-      o.value = value; o.textContent = label;
-      sel.appendChild(o);
-    }
-    sel.value = RESUME_DEFAULT;
-    sel.addEventListener("change", () => {
-      for (const r of claudeRows) {
-        const k = `${r.host}::${r.name}`;
-        // Rows whose args already say how they come back aren't ours to set --
-        // their dropdown is disabled, so silently overriding them would be a lie.
-        const a = restoreArgs.has(k) ? restoreArgs.get(k) : (r.args || "");
-        if (!argsCarryResume(a)) restoreResume.set(k, sel.value);
-      }
-      renderRestoreList(missing);           // reflect it on every row
-    });
-    head.append(text, sel);
-    list.appendChild(head);
-  }
-
-  for (const r of missing) {
-    const key = `${r.host}::${r.name}`;
-    // A div, not a label: the row now holds a <select>, and clicking that inside
-    // a label would toggle the checkbox with it.
-    const row = document.createElement("div");
-    row.className = "restore-row";
-    const tick = document.createElement("label");
-    tick.className = "restore-tick";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = restoreChecked.get(key) !== false; // default: checked
-    cb.addEventListener("change", () => restoreChecked.set(key, cb.checked));
-    tick.appendChild(cb);
-    const text = document.createElement("span");
-    text.className = "restore-row-text";
-    // The host is only worth the ~40px when it isn't the default -- " · local"
-    // on every row was squeezing the session name into an ellipsis.
-    text.innerHTML =
-      `<span class="kind">${KIND_GLYPH[r.kind] || ""}</span> ${escapeHtml(r.label || r.name)}` +
-      (r.host && r.host !== "local" ? `<span class="mono muted"> · ${escapeHtml(r.host)}</span>` : "");
-    tick.appendChild(text);
-
-    // Only Claude sessions have anything to choose; a shell just comes back.
-    if (r.kind !== "claude") { row.appendChild(tick); list.appendChild(row); continue; }
-
-    const args = restoreArgs.has(key) ? restoreArgs.get(key) : (r.args || "");
-    const open = restoreArgsOpen.has(key);
-
-    const more = document.createElement("button");
-    more.className = "restore-more" + (args ? " has" : "") + (open ? " open" : "");
-    more.type = "button";
-    more.textContent = "args";      // a labelled pill: "⋯" was not discoverable
-    more.title = args ? `claude ${args}` : "add extra claude args";
-    more.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      restoreArgsOpen.has(key) ? restoreArgsOpen.delete(key) : restoreArgsOpen.add(key);
-      renderRestoreList(missing);
-    });
-
-    // When the args say how the session comes back there is nothing left to pick,
-    // so don't render a control at all -- a disabled dropdown reads as something
-    // you could use. State the flag that will actually be applied instead.
-    const flag = argsResumeFlag(args);
-    let sel;
-    if (flag) {
-      sel = document.createElement("span");
-      sel.className = "restore-from-args";
-      sel.textContent = flag;
-      sel.title = `comes back with ${flag}, from its args`;
-    } else {
-      sel = document.createElement("select");
-      sel.className = "restore-resume";
-      sel.title = "How this Claude session comes back";
-      for (const [value, label] of RESUME_CHOICES) {
-        const o = document.createElement("option");
-        o.value = value; o.textContent = label;
-        sel.appendChild(o);
-      }
-      sel.value = restoreResume.get(key) ?? RESUME_DEFAULT;
-      sel.addEventListener("change", () => restoreResume.set(key, sel.value));
-    }
-
-    if (!open) {
-      row.append(tick, more, sel);
-    } else {
-      // two-line row: the args box belongs directly under *its own* row
-      row.classList.add("restore-row-2");
-      const line = document.createElement("div");
-      line.className = "restore-line";
-      line.append(tick, more, sel);
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "restore-args";
-      input.value = args;
-      input.placeholder = "--chrome";
-      input.spellcheck = false;
-      input.addEventListener("click", (ev) => ev.stopPropagation());
-      // Keep every keystroke, so nothing is lost even if something does force a
-      // rebuild; only re-render on commit, when the dot and the dropdown need to
-      // catch up with what was typed.
-      input.addEventListener("input", () => restoreArgs.set(key, input.value.trim()));
-      input.addEventListener("change", () => {
-        restoreArgs.set(key, input.value.trim());
-        renderRestoreList(missing);
-      });
-      input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") input.blur(); });
-      row.append(line, input);
-    }
-    list.appendChild(row);
-  }
-}
-
-async function doResume(targets) {
-  const buttons = [document.getElementById("restore-all"), document.getElementById("restore-selected")];
-  buttons.forEach((b) => { b.disabled = true; });
-  try {
-    const body = targets ? { targets: targets.map((r) => {
-      const key = `${r.host}::${r.name}`;
-      const t = {
-        host: r.host,
-        name: r.name,
-        // per-session choice; untouched rows take the same default the picker shows
-        resume: restoreResume.get(key) ?? RESUME_DEFAULT,
-      };
-      // Only send args the user actually edited -- absent means "keep what the
-      // snapshot has", which is not the same as clearing them.
-      if (restoreArgs.has(key)) t.args = restoreArgs.get(key);
-      return t;
-    }) } : {};
-    const data = await (await fetch("/api/sessions/restore", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })).json();
-    const n = data.restored || 0;
-    toast(`Resumed ${n} session${n === 1 ? "" : "s"}` +
-          (data.skipped ? ` (${data.skipped} already running)` : ""), "ok", 4000);
-  } catch { toast("Resume failed", "error", 4000); }
-  buttons.forEach((b) => { b.disabled = false; });
-  await loadSessions(); // pick up the recreated sessions (also refreshes the banner)
-}
-
-document.getElementById("restore-all").addEventListener("click", () => doResume(missingSaved()));
-document.getElementById("restore-selected").addEventListener("click", () => {
-  const picked = missingSaved().filter((r) => restoreChecked.get(`${r.host}::${r.name}`) !== false);
-  if (picked.length) doResume(picked);
-});
-document.getElementById("restore-view").addEventListener("click", () => {
-  restoreExpanded = !restoreExpanded;
-  updateRestoreBanner();
-});
-document.getElementById("restore-dismiss").addEventListener("click", () => {
-  restoreDismissed = true;
-  document.getElementById("restore-banner").hidden = true;
-});
 
 // --- sidebar ---------------------------------------------------------------
 
@@ -1536,13 +1312,10 @@ function renderBoard() {
     chip("running", "working") + chip("needs_input", "blocked") +
     chip("done", "done") + chip("idle", "idle");
 
-  // Exited claude sessions you can resume, scoped to the same filter/workspace.
-  const resumable = (exitedSessions || []).filter((s) => matchesFilter(s) && matchesWorkspace(s));
-
   const grid = document.getElementById("board-grid");
   // Fewer cards -> bigger cards. Narrow to one project and the room goes into the
   // pane preview instead of whitespace; the tiers are pure CSS custom properties.
-  const total = items.length + resumable.length;
+  const total = items.length;
   grid.classList.toggle("large", total > 0 && total <= 2);
   grid.classList.toggle("roomy", total > 2 && total <= 6);
 
@@ -1551,38 +1324,6 @@ function renderBoard() {
     return;
   }
   grid.innerHTML = "";
-
-  // Resume cards first -- an exited session is the thing most likely to want you.
-  for (const s of resumable) {
-    const card = document.createElement("div");
-    card.className = "bcard st-exited exited";
-    const tagsHtml = (s.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
-    card.innerHTML =
-      `<div class="bcard-h">` +
-        `<span class="bkind cc">cc</span>` +
-        `<span class="bname">${escapeHtml(s.label || s.name)}</span>` +
-        ownerChip(s, "bowner") +
-        (s.host === "local" ? "" : `<span class="bhost">${escapeHtml(s.host)}</span>`) +
-      `</div>` +
-      `<div class="btail"><span class="d">exited · ${escapeHtml(s.path || "")}</span></div>` +
-      `<div class="bcard-f">` +
-        `<span class="bchip"><i class="dot exited"></i>exited</span>` +
-        `<span class="wn">${tagsHtml}</span>` +
-        `<button class="mini x" type="button" title="dismiss">✕</button>` +
-        `<button class="mini pri" type="button" title="reopen claude and pick a conversation to resume">resume</button>` +
-      `</div>`;
-    const resume = () => attach({ host: s.host, name: s.name, kind: "claude",
-                                  label: s.label || s.name, path: s.path, resume: "resume" });
-    card.onclick = resume;
-    card.querySelector(".mini.pri").onclick = (e) => { e.stopPropagation(); resume(); };
-    card.querySelector(".mini.x").onclick = (e) => {
-      e.stopPropagation();
-      exitedDismissed.add(`${s.host}::${s.name}`);
-      exitedSessions = exitedSessions.filter((x) => !(x.host === s.host && x.name === s.name));
-      renderBoard();
-    };
-    grid.appendChild(card);
-  }
 
   for (const s of items) {
     const active = panes.some((p) => p.active && p.active.host === s.host && p.active.name === s.name);
@@ -1596,7 +1337,7 @@ function renderBoard() {
         `<span class="bname">${escapeHtml(s.label)}</span>` +
         ownerChip(s, "bowner") +
         // "local" on every card is ~40px spent stating the default, and the
-        // owner chip needs that room. Same trade the restore banner already made.
+        // owner chip needs that room.
         (s.host === "local" ? "" : `<span class="bhost">${escapeHtml(s.host)}</span>`) +
       `</div>` +
       `<div class="btail">${s.tail ? tailHtml(s.tail, s.state) : `<span class="d">${escapeHtml(s.path || "")}</span>`}` +
@@ -1679,12 +1420,29 @@ function paneOpenSocket(p, target, gen) {
       if (p.reconnectAttempts > 0) p.term.write("\r\n\x1b[90m[reconnected]\x1b[0m\r\n");
       p.reconnectAttempts = 0;
     }, STABLE_MS);
+    // Keepalive: a TUI waiting for input produces no PTY bytes and no
+    // keystrokes, so without this a NAT/idle timeout kills the socket and
+    // typing vanishes with no reconnect line. Same interval as the server.
+    paneStopPing(p);
+    p.pingTimer = setInterval(() => {
+      if (sock.readyState !== WebSocket.OPEN) { paneStopPing(p); return; }
+      try { sock.send(JSON.stringify({ ping: 1 })); }
+      catch { paneStopPing(p); }
+    }, WS_PING_MS);
   };
   sock.onmessage = (e) => {
-    if (typeof e.data === "string") p.term.write(e.data);
-    else p.term.write(new Uint8Array(e.data));
+    if (typeof e.data === "string") {
+      // keepalive — PTY output arrives as bytes, never as JSON text
+      if (e.data.charAt(0) === "{") {
+        try { if (JSON.parse(e.data).ping) return; } catch { /* fall through */ }
+      }
+      p.term.write(e.data);
+    } else {
+      p.term.write(new Uint8Array(e.data));
+    }
   };
   sock.onclose = (ev) => {
+    paneStopPing(p);
     clearTimeout(p.stableTimer);
     if (gen !== p.attachGen) return; // superseded by a newer attach
     if (ev && ev.code === 4404) { // unknown host -- don't loop, show a clean error
@@ -1721,11 +1479,16 @@ function paneScheduleReattach(p, target, gen) {
   }, delay);
 }
 
+function paneStopPing(p) {
+  if (p.pingTimer) { clearInterval(p.pingTimer); p.pingTimer = null; }
+}
+
 function paneAttach(p, target) {
   p.active = target;
   p.el.classList.remove("empty"); // a session is attached -> drop the hint
   p.attachGen++;
   p.reconnectAttempts = 0;
+  paneStopPing(p);
   clearTimeout(p.reconnectTimer);
   clearTimeout(p.stableTimer);
   if (p.ws) {
@@ -2731,11 +2494,31 @@ function refreshClaudePath() {
   }
 }
 
+function findSavedProfile() {
+  const host = nsHost.value || "local";
+  const kind = nsKind.value || "shell";
+  const name = sessionName(kind, (nsLabel.value || "").trim());
+  return savedNotLive().find((r) => r.host === host && r.name === name) || null;
+}
+
+// A matching saved-not-live profile fills path/args and defaults Claude to
+// resume… — that's the on-demand offer, not a board card.
+function applySavedProfile() {
+  const rec = findSavedProfile();
+  if (!rec) return false;
+  if (!nsPathDirty && rec.path) nsPath.value = rec.path;
+  if (nsKind.value === "claude") {
+    nsResume.value = "resume";
+    nsArgs.value = rec.args || "";
+  }
+  return true;
+}
+
 function syncPathRow() {
   nsPathRow.hidden = false;                          // every kind can start somewhere
   nsResumeRow.hidden = nsKind.value !== "claude";    // resume is Claude-only
   document.getElementById("ns-args-row").hidden = nsKind.value !== "claude";  // and so are args
-  refreshClaudePath();
+  if (!applySavedProfile()) refreshClaudePath();
 }
 
 function populateHostOptions() {
@@ -2799,7 +2582,8 @@ document.getElementById("new-session").addEventListener("click", () => {
   nsForm.hidden ? openNewSession() : closeNewSession();
 });
 nsKind.addEventListener("change", syncPathRow);
-nsLabel.addEventListener("input", refreshClaudePath);
+nsHost.addEventListener("change", () => { if (!applySavedProfile()) refreshClaudePath(); });
+nsLabel.addEventListener("input", () => { if (!applySavedProfile()) refreshClaudePath(); });
 nsPath.addEventListener("input", () => { nsPathDirty = true; });
 document.getElementById("ns-cancel").addEventListener("click", closeNewSession);
 document.getElementById("ns-submit").addEventListener("click", submitNewSession);
@@ -3412,28 +3196,35 @@ function renderPaletteRow(item, i) {
     const ch = escHtml(text[c]);
     inner += pos.has(c) ? `<span class="hl">${ch}</span>` : ch;
   }
+  const mark = item.saved
+    ? `<span class="muted">saved</span>`
+    : `<span class="dot ${s.state}"></span>`;
+  const xTitle = item.saved ? "forget saved session" : "kill session";
   row.innerHTML =
     `<span class="kind">${KIND_GLYPH[s.kind] || ""}</span>` +
     `<span class="ptext">${inner}</span>` +
-    `<span class="dot ${s.state}"></span>` +
-    `<button class="pkill" title="kill session">✕</button>`;
+    mark +
+    `<button class="pkill" title="${xTitle}">✕</button>`;
   row.onclick = () => choosePalette(i);
   row.querySelector(".pkill").onclick = (ev) => { ev.stopPropagation(); killFromPalette(item); };
   return row;
 }
 
-// Kill a session (the ✕ on a sidebar row and in the palette). The attached
-// session, if any, tears down server-side and closes with code 4410 -> the
-// client shows [session ended] and does not reattach.
+// ✕ on a live session kills tmux and forgets the profile. ✕ on a saved-not-live
+// row only forgets — same endpoint, because /api/kill always store.remove()s.
 async function killSession(s) {
-  if (!confirm(`Kill session "${s.label}" on ${s.host}? This ends its tmux session.`)) return false;
+  const live = sessionList.some((x) => x.host === s.host && x.name === s.name);
+  const msg = live
+    ? `Kill session "${s.label}" on ${s.host}? This ends its tmux session and it won't be offered to resume.`
+    : `Forget saved session "${s.label}" on ${s.host}? It won't be offered to resume.`;
+  if (!confirm(msg)) return false;
   try {
     await fetch("/api/kill", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ host: s.host, name: s.name }),
     });
-    toast(`killed ${escapeHtml(s.label)}`, "warn", 3000);
-  } catch { toast("kill failed", "error"); }
+    toast(live ? `killed ${escapeHtml(s.label)}` : `forgot ${escapeHtml(s.label)}`, "warn", 3000);
+  } catch { toast(live ? "kill failed" : "forget failed", "error"); }
   await loadSessions();
   return true;
 }
@@ -3450,8 +3241,15 @@ function refreshPalette() {
     const m = fuzzyScore(q, text);
     if (m) scored.push({ session: s, text, positions: m.positions, score: m.score });
   }
+  for (const r of savedNotLive()) {
+    const s = { host: r.host, name: r.name, kind: r.kind, label: r.label || r.name,
+                path: r.path, args: r.args || "", tags: r.tags || [] };
+    const text = paletteText(s);
+    const m = fuzzyScore(q, text);
+    if (m) scored.push({ session: s, text, positions: m.positions, score: m.score, saved: true });
+  }
   if (q) scored.sort((a, b) => b.score - a.score || a.text.localeCompare(b.text));
-  // sessions first (Enter jumps to the top match), then a pinned "new session" action
+  // live + saved first (Enter jumps to the top match), then a pinned "new session"
   paletteItems = [...scored, { action: "new" }];
   paletteIndex = 0;
   paletteListEl.innerHTML = "";
@@ -3472,6 +3270,11 @@ function choosePalette(i) {
   closePalette();
   if (item.action === "new") { openNewSession(); return; }
   const s = item.session;
+  if (item.saved) {
+    attach({ host: s.host, name: s.name, kind: s.kind, label: s.label,
+             path: s.path, resume: s.kind === "claude" ? "resume" : "", args: s.args || "" });
+    return;
+  }
   attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
 }
 

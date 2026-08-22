@@ -183,15 +183,20 @@ def _owns(sess: dict | None, owner: str) -> bool:
 async def _may_touch(sess: dict | None, host: str, name: str) -> bool:
     """Authorise an action on a session the caller named directly.
 
-    A session that does not exist yet is fair game: the caller is creating it,
-    and ws_attach stamps them as the owner. Only a *live* session someone else
-    owns is refused.
+    A *live* session someone else owns is refused. A saved profile that is
+    not live is the same rule -- otherwise a guessed name would let anyone
+    forget someone else's profile via /api/kill. A name with no live session
+    and no profile is a create, and that is fair game (ws_attach stamps the
+    owner).
     """
     loop = asyncio.get_event_loop()
-    if not await loop.run_in_executor(_pool, sessions.session_exists, host, name):
-        return True
-    owner = await loop.run_in_executor(_pool, sessions.get_owner, host, name)
-    return _owns(sess, owner)
+    if await loop.run_in_executor(_pool, sessions.session_exists, host, name):
+        owner = await loop.run_in_executor(_pool, sessions.get_owner, host, name)
+        return _owns(sess, owner)
+    rec = await loop.run_in_executor(_pool, store.get, host, name)
+    if rec is not None:
+        return _owns(sess, rec.get("owner", "") or "")
+    return True
 
 
 @app.get("/api/auth/status")
@@ -492,15 +497,15 @@ async def api_sessions(request: Request) -> JSONResponse:
     # The snapshot and the live-tracking are serai's own bookkeeping about the
     # whole fleet, so they see everything regardless of who is asking. Only the
     # *response* is scoped to the caller.
-    await loop.run_in_executor(_pool, store.upsert, flat)  # snapshot for post-reboot restore
+    await loop.run_in_executor(_pool, store.upsert, flat)  # saved profiles; /exit keeps them
     store.mark_live([f"{s['host']}::{s['name']}" for s in flat])  # for resume-after-exit
     return JSONResponse([s for s in flat if _owns(sess, s.get("owner", ""))])
 
 
 @app.get("/api/sessions/saved")
 async def api_sessions_saved(request: Request) -> JSONResponse:
-    """The snapshot of sessions offered for restore after a reboot (known hosts
-    only, and only the caller's own -- see _owns)."""
+    """Saved session profiles (known hosts only, and only the caller's own --
+    see _owns). Not-live entries are what + New and the palette offer to resume."""
     sess = _session(request)
     loop = asyncio.get_event_loop()
     saved = await loop.run_in_executor(_pool, store.saved)
@@ -757,7 +762,7 @@ async def api_kill(request: Request) -> JSONResponse:
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.kill_argv(host, name))
     sessions.clear_cache(host)
-    await loop.run_in_executor(_pool, store.remove, host, name)  # drop from the restore snapshot
+    await loop.run_in_executor(_pool, store.remove, host, name)  # forget the profile
     return JSONResponse({"ok": bool(ok)})
 
 
@@ -929,6 +934,24 @@ async def api_upload(host: str = "local", path: str = "", file: UploadFile = Fil
 
 # --- terminal attach over websocket ---------------------------------------
 
+# Keepalive so an idle attach (a TUI waiting for input: no PTY output, no
+# keystrokes) is not dropped by a NAT / browser / idle timeout. Localhost
+# never hits those; a second machine does. ASGI has no protocol ping, so this
+# is a JSON control frame on the same channel as resize. 20s sits under the
+# common 30s/60s idle cuts. 0 disables it (tests).
+WS_PING_INTERVAL = 20.0
+
+
+async def _ws_keepalive(ws: WebSocket) -> None:
+    """Send a tiny ping every WS_PING_INTERVAL seconds until the socket dies."""
+    try:
+        while True:
+            await asyncio.sleep(WS_PING_INTERVAL)
+            await ws.send_text('{"ping":1}')
+    except (WebSocketDisconnect, RuntimeError):
+        return
+
+
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
@@ -1064,6 +1087,8 @@ async def ws_attach(ws: WebSocket) -> None:
 
     loop.add_reader(master_fd, _on_readable)
 
+    ping_task = (asyncio.create_task(_ws_keepalive(ws))
+                 if WS_PING_INTERVAL > 0 else None)
     try:
         while True:
             msg = await ws.receive()
@@ -1074,6 +1099,7 @@ async def ws_attach(ws: WebSocket) -> None:
             elif msg.get("text") is not None:
                 # control frames: {"resize": {"rows": R, "cols": C}}
                 #                 {"scroll": {"lines": N}}   (+ back, - forward)
+                #                 {"ping": 1}                (keepalive; no-op)
                 try:
                     payload = json.loads(msg["text"])
                 except ValueError:
@@ -1099,6 +1125,8 @@ async def ws_attach(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if ping_task is not None:
+            ping_task.cancel()
         loop.remove_reader(master_fd)
         try:
             os.kill(pid, signal.SIGTERM)

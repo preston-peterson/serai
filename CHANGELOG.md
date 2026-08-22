@@ -9,6 +9,41 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.23.0]
+
+### Changed
+
+- **Saved session profiles, not an ever-growing restore inventory.** Creating a
+  session still remembers how to start it (host, kind, label, dir, tags, args).
+  `/exit` and a reboot keep that profile. ✕ — on a live row or on a saved
+  row in the jump palette — forgets it, and it is not offered again.
+
+- **Resume is on demand.** Jump-to-session lists saved-but-not-live profiles
+  (marked *saved*); picking one reopens it with `claude --resume` when it's a
+  Claude session. + New fills path/args from a matching profile and defaults
+  the session picker to resume. The dimmed exited cards that led the board,
+  and the sidebar "resume N sessions from before?" banner, are gone — they
+  were a constant nag of the same list.
+
+### Fixed
+
+- **✕ on a session that had already `/exit`ed now forgets the profile.** The
+  live kill path already dropped the snapshot; a name that was only saved
+  was previously a no-op for ownership checks (no live tmux session), so
+  anyone who guessed it could also have dropped someone else's. `/api/kill`
+  now applies the owner rule to saved profiles too.
+
+## [2.22.2]
+
+### Fixed
+
+- **A session attached from another machine went silent after a minute or
+  two** — typing did nothing, with no reconnect message. `/ws/attach` never
+  pinged, so once a TUI (grok, and anything else that bursts then waits for
+  input) went idle, a NAT or browser idle timeout killed the socket. Both
+  ends now send a tiny keepalive every 20s. Localhost never showed this; a
+  second machine did.
+
 ## [2.22.1]
 
 ### Fixed

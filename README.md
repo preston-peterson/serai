@@ -110,20 +110,17 @@ and recreates it, running exactly what the args say and nothing more — so put
 shows you the command line it's about to run, since anything running in the
 session is lost.
 
-**After a reboot**, serai offers to bring back the sessions that were open, with a
-choice of how each Claude session returns: open its resume picker (the default —
-you land in `claude --resume` and pick the conversation), continue the last one,
-or start fresh. Set them all at once from the control above the list, or override
-any single row. Each row's **ARGS** button opens that session's args, so you can change how it
-comes back before you bring it back — a dot on the button means it already
-carries some. If the args say `--resume` or `--continue` themselves, they win —
-the row drops its dropdown and simply shows the flag it will use, rather than
-offering a choice that wouldn't be honoured or adding a second, conflicting flag.
+**Saved profiles.** Creating a session remembers how to start it (host, kind,
+label, directory, tags, extra args). That profile survives `/exit` and a reboot.
+✕ on a live session — or on a saved row in **jump to session** — forgets it, and
+it will not be offered again.
 
-**Exit a Claude session** (`/exit`) and it doesn't just vanish — it stays on the
-board as a dimmed **resume** card. One tap reopens it in its project directory
-running `claude --resume`, so you land back in the conversation picker. Dismiss
-the card if you meant to close it.
+**Resume is on demand**, not a banner and not a card in front of live work.
+**Jump to session** lists saved-but-not-live profiles (marked *saved*); picking
+one reopens it, and a Claude session lands in `claude --resume` so you choose
+the conversation. **+ New** with a matching label fills the path and args from
+the profile and defaults the session picker to resume. The board and rail only
+show what's running.
 
 ## On a phone
 
@@ -236,7 +233,7 @@ them, with an owner chip on each card and rail row so it's obvious whose is
 whose. Attaching, killing, renaming, restarting and broadcasting all refuse
 someone else's session, not just the board and the rail — a session name is easy
 to guess. Ownership lives on the session (`@serai_owner`), so it survives a
-restart and a post-reboot restore. Sessions with no recorded owner — made outside
+restart and a later resume from a saved profile. Sessions with no recorded owner — made outside
 serai, or before this existed — are visible to admins only, so an existing fleet
 doesn't land on a new user's board.
 

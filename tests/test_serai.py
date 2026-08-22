@@ -427,6 +427,86 @@ def test_ws_close_normal_when_session_alive(monkeypatch):
     assert _ws_close_code(monkeypatch, exists=True) == 1000
 
 
+def test_ws_ping_frame_does_not_reach_the_pty(monkeypatch):
+    """A keepalive ping is a JSON control frame. Bytes go to the PTY; ping must not."""
+    monkeypatch.setattr(
+        sessions,
+        "attach_argv",
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": [
+            "python3", "-u", "-c",
+            'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
+        ],
+    )
+    client = TestClient(app)
+    with client.websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
+        buf = ""
+
+        def drain(needle, tries=30):
+            nonlocal buf
+            for _ in range(tries):
+                m = ws.receive()
+                if m.get("bytes"):
+                    buf += m["bytes"].decode(errors="replace")
+                elif m.get("text"):
+                    try:
+                        if json.loads(m["text"]).get("ping"):
+                            continue
+                    except ValueError:
+                        pass
+                    buf += m["text"]
+                if needle in buf:
+                    return True
+            return False
+
+        assert drain("READY")
+        ws.send_text(json.dumps({"ping": 1}))
+        ws.send_bytes(b"hello\n")
+        assert drain("GOT:hello")
+        assert '{"ping"' not in buf
+
+
+def test_ws_keepalive_sends_ping(monkeypatch):
+    import serai.main as main
+    monkeypatch.setattr(main, "WS_PING_INTERVAL", 0.01)
+    sent = []
+
+    class _FakeWS:
+        async def send_text(self, s):
+            sent.append(s)
+            raise RuntimeError("stop")
+
+    import asyncio
+    asyncio.run(main._ws_keepalive(_FakeWS()))
+    assert sent == ['{"ping":1}']
+
+
+def test_ws_server_sends_keepalive_on_an_idle_attach(monkeypatch):
+    """The ping task is wired into ws_attach, not just the helper."""
+    import serai.main as main
+    monkeypatch.setattr(main, "WS_PING_INTERVAL", 0.05)
+    monkeypatch.setattr(
+        sessions,
+        "attach_argv",
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": [
+            "python3", "-u", "-c",
+            "import sys; print('READY', flush=True); sys.stdin.read()",
+        ],
+    )
+    with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            m = ws.receive()
+            text = m.get("text")
+            if not text:
+                continue
+            try:
+                if json.loads(text).get("ping"):
+                    return
+            except ValueError:
+                continue
+    raise AssertionError("server never sent a keepalive ping")
+
+
 # --- files.py SFTP path ----------------------------------------------------
 #
 # These mock paramiko so the remote file path is exercised without a real host.
@@ -2495,6 +2575,49 @@ def test_restart_keeps_the_restore_record_unlike_kill(monkeypatch, tmp_path):
     assert store.saved()[0]["args"] == "--chrome"
     client.post("/api/kill", json={"host": "local", "name": "cc-x"})
     assert store.saved() == [], "kill, by contrast, does drop it"
+
+
+def test_store_get_returns_a_profile_or_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": []}])
+    assert store.get("local", "cc-x")["label"] == "x"
+    assert store.get("local", "nope") is None
+    store.remove("local", "cc-x")
+    assert store.get("local", "cc-x") is None
+
+
+def test_kill_forgets_a_saved_profile_that_is_not_live(tmp_path, monkeypatch):
+    """✕ after /exit: no tmux session, but the profile must still drop."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: True)
+    monkeypatch.setattr(sessions, "session_exists", lambda h, n: False)
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": [], "owner": ""}])
+    r = TestClient(app).post("/api/kill", json={"host": "local", "name": "cc-x"})
+    assert r.status_code == 200
+    assert store.saved() == []
+
+
+def test_kill_refuses_someone_elses_saved_profile(auth_on, monkeypatch):
+    """A guessed name must not let a non-admin forget someone else's profile
+    just because the tmux session is already gone."""
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: True)
+    monkeypatch.setattr(sessions, "session_exists", lambda h, n: False)
+    auth.add_user("alice", "longenough", admin=True)
+    auth.add_user("bob", "longenough")
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": [], "owner": "alice"}])
+    bob = TestClient(app)
+    bob.post("/api/login", json={"username": "bob", "password": "longenough"})
+    assert bob.post("/api/kill", json={"host": "local", "name": "cc-x"}).status_code == 403
+    assert store.get("local", "cc-x") is not None
+    admin = TestClient(app)
+    admin.post("/api/login", json={"username": "alice", "password": "longenough"})
+    assert admin.post("/api/kill", json={"host": "local", "name": "cc-x"}).status_code == 200
+    assert store.get("local", "cc-x") is None
 
 
 def test_clean_dir_refuses_serais_own_directory():

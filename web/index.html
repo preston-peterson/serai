@@ -19,7 +19,7 @@
       </div>
       <span class="topbar-sp"></span>
       <button id="board-toggle" class="btn" type="button" title="Toggle between the board and your open session">&#x229E; board</button>
-      <button id="jump" class="srch" type="button" title="Jump to a session (double-tap Shift)">&#x2315; jump to session&hellip;</button>
+      <button id="jump" class="srch" type="button" title="Jump to a live or saved session (double-tap Shift)">&#x2315; jump to session&hellip;</button>
       <button id="new-session" class="btn primary" title="New session">+ New</button>
       <button id="settings" class="btn" title="Terminal theme &amp; font">&#x2699;</button>
       <button id="account" class="avatar" title="Account &amp; users" hidden></button>
@@ -77,18 +77,6 @@
 
     <div class="layout" hidden>
       <aside class="sidebar rail">
-        <div id="restore-banner" class="restore-banner" hidden>
-          <div class="restore-head">
-            <span id="restore-msg" class="restore-msg"></span>
-            <button id="restore-view" class="restore-link" type="button">view</button>
-            <button id="restore-dismiss" class="restore-x" type="button" title="dismiss">✕</button>
-          </div>
-          <div id="restore-list" class="restore-list" hidden></div>
-          <div class="restore-actions">
-            <button id="restore-selected" class="btn" type="button" hidden>resume selected</button>
-            <button id="restore-all" class="btn primary" type="button">resume all</button>
-          </div>
-        </div>
         <nav id="tree" class="tree"><div class="tree-loading"><span class="spinner"></span>loading sessions…</div></nav>
         <div id="broadcast" class="broadcast" hidden>
           <div class="bcast-row">
