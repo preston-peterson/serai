@@ -1,6 +1,17 @@
 "use strict";
 
-const KIND_GLYPH = { claude: "\u2726", shell: "\u276f" }; // ✦  ❯
+// The session kinds. Agents (claude/grok/opencode) run their own full-screen TUI
+// in a project dir and carry a resume choice + extra args; a shell is just a
+// shell. `chip` is the two-letter board/rail badge, `prefix` the storage prefix,
+// `cmd` the command serai launches (null for a shell). Add an agent here, a row
+// in #ns-kind, and a .bkind.<chip> rule in style.css to ship a new one.
+const KINDS = {
+  claude:   { glyph: "\u2726", chip: "cc", prefix: "cc-",   cmd: "claude" },   // ✦
+  grok:     { glyph: "\u25cf", chip: "gr", prefix: "grok-", cmd: "grok" },     // ●
+  opencode: { glyph: "\u25b2", chip: "oc", prefix: "oc-",   cmd: "opencode" }, // ▲
+  shell:    { glyph: "\u276f", chip: "sh", prefix: "shell-", cmd: null },       // ❯
+};
+const AGENT_KINDS = ["claude", "grok", "opencode"];
 const REFRESH_MS = 5000;
 const MAX_REATTACH = 6;   // consecutive failed reattaches before giving up
 const STABLE_MS = 6000;   // a session must stay up this long to count as healthy
@@ -179,7 +190,8 @@ function renderPaneTabs() {
     const s = a ? sessionList.find((x) => x.host === a.host && x.name === a.name) : null;
     const tab = document.createElement("span");
     tab.className = "ptab" + (p === focused ? " on" : "");
-    const label = a ? `${a.kind === "claude" ? "cc · " : ""}${a.label}` : "no session";
+    const chip = a && AGENT_KINDS.includes(a.kind) ? KINDS[a.kind].chip + " · " : "";
+    const label = a ? `${chip}${a.label}` : "no session";
     tab.innerHTML =
       `<i class="dot ${s ? s.state : "idle"}"></i>` +
       `<span class="ptab-nm">${escapeHtml(label)}</span>` +
@@ -1016,7 +1028,7 @@ function savedNotLive() {
 // tmux session name from kind + label. Must match sessions.session_name.
 function sessionName(kind, label) {
   const safe = String(label || "").trim().replace(/[^A-Za-z0-9_.-]/g, "-") || "session";
-  return (kind === "claude" ? "cc-" : "shell-") + safe;
+  return (KINDS[kind] ? KINDS[kind].prefix : "shell-") + safe;
 }
 
 // Who owns a session, as a chip -- admins only. Everyone else sees nothing but
@@ -1138,14 +1150,14 @@ function renderTree() {
       const tagsHtml = (s.tags || []).map((t) => `<span class="tag">${t}</span>`).join("");
       row.innerHTML =
         `<span class="dot ${s.state}"></span>` +
-        `<span class="bkind ${s.kind === "claude" ? "cc" : ""}">${s.kind === "claude" ? "cc" : "sh"}</span>` +
+        `<span class="bkind ${KINDS[s.kind] ? KINDS[s.kind].chip : ""}">${KINDS[s.kind] ? KINDS[s.kind].chip : "sh"}</span>` +
         `<span class="name">${escapeHtml(s.label)}</span>` +
         ownerChip(s, "rowner") +
         (tagsHtml ? `<span class="tags">${tagsHtml}</span>` : "") +
         `<span class="rw">${escapeHtml(s.state === "running" ? "now" : fmtAge(s.age))}</span>` +
         `<button class="row-split" title="open in a split pane (side by side)">\u25eb</button>` +
         `<button class="row-edit" title="rename / tag">\u270e</button>` +
-        (s.kind === "claude"
+        (AGENT_KINDS.includes(s.kind)
           ? `<button class="row-restart" title="restart (kill and recreate)">\u27f3</button>` : "") +
         `<button class="row-del" title="kill session">\u2715</button>`;
       row.onclick = () => attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
@@ -1155,10 +1167,10 @@ function renderTree() {
       if (restartBtn) restartBtn.onclick = (ev) => {
         ev.stopPropagation();
         if (!confirm(`Restart ${s.label}? This kills the running session and runs: ` +
-                     `claude${s.args ? " " + s.args : ""}\n\n` +
-                     "Anything running in it is lost." +
-                     (/(^|\s)--(resume|continue)(\s|$)/.test(s.args || "") ? ""
-                       : "\nAdd --resume to the args if you want the conversation picker."))) return;
+                      `${KINDS[s.kind].cmd}${s.args ? " " + s.args : ""}\n\n` +
+                      "Anything running in it is lost." +
+                      (/(^|\s)--(resume|continue|session)(\s|$)/.test(s.args || "") ? ""
+                        : "\nAdd --resume to the args if you want the conversation picker."))) return;
         restartSession(s);
       };
       row.querySelector(".row-del").onclick = (ev) => { ev.stopPropagation(); killSession(s); };
@@ -1365,7 +1377,7 @@ function renderBoard() {
     const live = s.state === "running" || s.state === "needs_input";
     card.innerHTML =
       `<div class="bcard-h">` +
-        `<span class="bkind ${s.kind === "claude" ? "cc" : ""}">${s.kind === "claude" ? "cc" : "sh"}</span>` +
+        `<span class="bkind ${KINDS[s.kind] ? KINDS[s.kind].chip : ""}">${KINDS[s.kind] ? KINDS[s.kind].chip : "sh"}</span>` +
         `<span class="bname">${escapeHtml(s.label)}</span>` +
         ownerChip(s, "bowner") +
         // "local" on every card is ~40px spent stating the default, and the
@@ -1432,7 +1444,7 @@ function paneOpenSocket(p, target, gen) {
   });
   if (target.path) q.set("path", target.path);
   if (target.resume) q.set("resume", target.resume);
-  if (target.args) q.set("args", target.args);   // extra `claude` args; server re-cleans them
+  if (target.args) q.set("args", target.args);   // extra agent args; server re-cleans them
   q.set("mouse", termSettings.scrollbackMouse ? "1" : "0");
   q.set("history", String(termSettings.scrollback));  // tmux history-limit (depth)
 
@@ -2520,8 +2532,8 @@ const nsResumeRow = document.getElementById("ns-resume-row");
 const nsArgs = document.getElementById("ns-args");
 let nsPathDirty = false; // true once the user hand-edits the path
 
-function refreshClaudePath() {
-  if (nsKind.value === "claude" && !nsPathDirty) {
+function refreshAgentPath() {
+  if (AGENT_KINDS.includes(nsKind.value) && !nsPathDirty) {
     nsPath.value = "~/git/" + ((nsLabel.value || "").trim() || "myproject");
   }
 }
@@ -2533,13 +2545,13 @@ function findSavedProfile() {
   return savedNotLive().find((r) => r.host === host && r.name === name) || null;
 }
 
-// A matching saved-not-live profile fills path/args and defaults Claude to
+// A matching saved-not-live profile fills path/args and defaults an agent to
 // resume… — that's the on-demand offer, not a board card.
 function applySavedProfile() {
   const rec = findSavedProfile();
   if (!rec) return false;
   if (!nsPathDirty && rec.path) nsPath.value = rec.path;
-  if (nsKind.value === "claude") {
+  if (AGENT_KINDS.includes(nsKind.value)) {
     nsResume.value = "resume";
     nsArgs.value = rec.args || "";
   }
@@ -2548,9 +2560,9 @@ function applySavedProfile() {
 
 function syncPathRow() {
   nsPathRow.hidden = false;                          // every kind can start somewhere
-  nsResumeRow.hidden = nsKind.value !== "claude";    // resume is Claude-only
-  document.getElementById("ns-args-row").hidden = nsKind.value !== "claude";  // and so are args
-  if (!applySavedProfile()) refreshClaudePath();
+  nsResumeRow.hidden = !AGENT_KINDS.includes(nsKind.value);    // resume is agent-only
+  document.getElementById("ns-args-row").hidden = !AGENT_KINDS.includes(nsKind.value);  // and so are args
+  if (!applySavedProfile()) refreshAgentPath();
 }
 
 function populateHostOptions() {
@@ -2600,11 +2612,12 @@ function submitNewSession() {
   const host = nsHost.value || "local";
   const kind = nsKind.value || "shell";
   const label = (nsLabel.value || "").trim() || "main";
+  const isAgent = AGENT_KINDS.includes(kind);
   // a shell may start somewhere too; blank just means "wherever tmux would"
   const typed = nsPath.value.trim();
-  const path = kind === "claude" ? (typed || "~/git/" + label) : (typed || null);
-  const resume = kind === "claude" ? nsResume.value : "";
-  const args = kind === "claude" ? nsArgs.value.trim() : "";
+  const path = isAgent ? (typed || "~/git/" + label) : (typed || null);
+  const resume = isAgent ? nsResume.value : "";
+  const args = isAgent ? nsArgs.value.trim() : "";
   closeNewSession();
   attach({ host, name: "", kind, label, path, resume, args });
   setTimeout(loadSessions, 800);
@@ -2614,8 +2627,8 @@ document.getElementById("new-session").addEventListener("click", () => {
   nsForm.hidden ? openNewSession() : closeNewSession();
 });
 nsKind.addEventListener("change", syncPathRow);
-nsHost.addEventListener("change", () => { if (!applySavedProfile()) refreshClaudePath(); });
-nsLabel.addEventListener("input", () => { if (!applySavedProfile()) refreshClaudePath(); });
+nsHost.addEventListener("change", () => { if (!applySavedProfile()) refreshAgentPath(); });
+nsLabel.addEventListener("input", () => { if (!applySavedProfile()) refreshAgentPath(); });
 nsPath.addEventListener("input", () => { nsPathDirty = true; });
 document.getElementById("ns-cancel").addEventListener("click", closeNewSession);
 document.getElementById("ns-submit").addEventListener("click", submitNewSession);
@@ -2782,13 +2795,13 @@ function openEditSession(s) {
   // show the configured start dir; fall back to the live cwd so the field says
   // where the session actually is rather than sitting empty
   editDir.value = s.dir || s.path || "";
-  // Extra `claude` args are Claude-only -- a shell has no command of ours to
-  // pass them to -- so the row and the restart button only appear for cc sessions.
-  const isClaude = s.kind === "claude";
+  // Extra args are agent-only -- a shell has no command of ours to pass them to
+  // -- so the row and the restart button only appear for agent sessions.
+  const isAgent = AGENT_KINDS.includes(s.kind);
   editArgs.value = s.args || "";
-  document.getElementById("edit-args-row").hidden = !isClaude;
-  document.getElementById("edit-args-hint").hidden = !isClaude;
-  document.getElementById("edit-restart").hidden = !isClaude;
+  document.getElementById("edit-args-row").hidden = !isAgent;
+  document.getElementById("edit-args-hint").hidden = !isAgent;
+  document.getElementById("edit-restart").hidden = !isAgent;
   editForm.hidden = false;
   editLabel.focus();
   editLabel.select();
@@ -2804,14 +2817,14 @@ async function saveEditSession(thenRestart) {
   const newDir = editDir.value.trim();
   const newArgs = editArgs.value.trim();
   const dirChanged = newDir !== (s.dir || s.path || "");
-  const argsChanged = s.kind === "claude" && newArgs !== (s.args || "");
-  // Ask before a restart: it kills the running claude. Do it while the dialog is
+  const argsChanged = AGENT_KINDS.includes(s.kind) && newArgs !== (s.args || "");
+  // Ask before a restart: it kills the running agent. Do it while the dialog is
   // still up, so cancelling leaves you where you were rather than half-applied.
   if (thenRestart && !confirm(
       `Restart ${s.label}? This kills the running session and runs: ` +
-      `claude${newArgs ? " " + newArgs : ""}\n\n` +
+      `${KINDS[s.kind].cmd}${newArgs ? " " + newArgs : ""}\n\n` +
       "Anything running in it is lost." +
-      (/(^|\s)--(resume|continue)(\s|$)/.test(newArgs) ? ""
+      (/(^|\s)--(resume|continue|session)(\s|$)/.test(newArgs) ? ""
         : "\nAdd --resume to the args if you want the conversation picker."))) return;
   closeEditSession();
   let name = s.name;
@@ -3189,7 +3202,7 @@ function escHtml(ch) {
 
 // What each session matches against (and shows): kind, label, and host.
 function paletteText(s) {
-  return `${s.kind === "claude" ? "cc" : "shell"} · ${s.label} · ${s.host}`;
+  return `${AGENT_KINDS.includes(s.kind) ? KINDS[s.kind].chip : "shell"} · ${s.label} · ${s.host}`;
 }
 
 // Subsequence fuzzy match. Returns matched positions + a score (contiguous runs
@@ -3233,7 +3246,7 @@ function renderPaletteRow(item, i) {
     : `<span class="dot ${s.state}"></span>`;
   const xTitle = item.saved ? "forget saved session" : "kill session";
   row.innerHTML =
-    `<span class="kind">${KIND_GLYPH[s.kind] || ""}</span>` +
+    `<span class="kind">${(KINDS[s.kind] || {}).glyph || ""}</span>` +
     `<span class="ptext">${inner}</span>` +
     mark +
     `<button class="pkill" title="${xTitle}">✕</button>`;
@@ -3304,7 +3317,7 @@ function choosePalette(i) {
   const s = item.session;
   if (item.saved) {
     attach({ host: s.host, name: s.name, kind: s.kind, label: s.label,
-             path: s.path, resume: s.kind === "claude" ? "resume" : "", args: s.args || "" });
+             path: s.path, resume: AGENT_KINDS.includes(s.kind) ? "resume" : "", args: s.args || "" });
     return;
   }
   attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });

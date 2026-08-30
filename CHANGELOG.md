@@ -9,6 +9,38 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.24.0]
+
+### Added
+
+- **Grok Build and OpenCode are first-class session kinds, alongside Claude.**
+  Pick them from `+ New` (and they flow through the rail, board, palette, edit
+  dialog, restart, and resume like Claude already did). Each kind is defined in
+  one place — the `_AGENTS` table in `serai/sessions.py` (command, storage
+  prefix, and per-kind resume-flag mapping) mirrored by a `KINDS` object in the
+  UI — so a new agent is a one-row change plus a board chip.
+
+  - **Own names and chips.** `grok-` and `oc-` prefixes (invariant #5 grows to
+    four storage prefixes); the board/rail show a two-letter badge — `cc` / `gr`
+    / `oc` / `sh` — colour-coded (blue / coral / purple / neutral), and the
+    palette + tab bar carry a per-kind glyph (✦ ● ▲ ❯).
+  - **Own command.** `attach_argv`/`restore_argv` run the kind's own binary
+    (`grok` / `opencode`) in the project dir, exactly as they run `claude`.
+  - **Own resume flags.** grok mirrors Claude (`--continue` / `--resume`, the
+    latter an interactive picker); opencode has no picker, so `resume` falls
+    back to `--continue` (its "pick up the last session") rather than silently
+    starting fresh. The args-still-win rule now recognises `--session` too, so
+    opencode's `--session <id>` suppresses a flag serai would otherwise add.
+  - **State reads the content, like Claude.** All three agents route through the
+    TUI/content path (a permission prompt = needs input, a busy marker =
+    running), not the shell activity-age path. grok/opencode have no known busy
+    string yet, so they read "done" while actively working; the per-kind wait
+    markers are extendable via `SERAI_WAIT_MARKERS_GROK` /
+    `SERAI_WAIT_MARKERS_OPENCODE`.
+  - **Resume is on demand for every agent.** A `/exit`-ed grok or opencode
+    session is offered the same way a Claude one is (`recently_exited` now
+    covers all agent kinds, not just claude).
+
 ## [2.23.1]
 
 ### Fixed

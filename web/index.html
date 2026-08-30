@@ -34,6 +34,8 @@
           <select id="ns-kind">
             <option value="shell">shell</option>
             <option value="claude">claude</option>
+            <option value="grok">grok</option>
+            <option value="opencode">opencode</option>
           </select>
         </div>
         <div class="form-row">
@@ -56,7 +58,7 @@
           <label for="ns-args">args</label>
           <input id="ns-args" type="text" autocomplete="off" spellcheck="false"
                  placeholder="--chrome"
-                 title="Extra arguments passed to claude when this session starts" />
+                 title="Extra arguments passed to the agent (claude / grok / opencode) when this session starts" />
         </div>
         <div class="form-actions">
           <button id="ns-cancel" class="btn" type="button">cancel</button>
@@ -100,7 +102,7 @@
         <div id="keybar" class="keybar mobile-only">
           <button class="kcap wide" data-k="esc" type="button">esc</button>
           <button class="kcap wide" data-k="tab" type="button">tab</button>
-          <button class="kcap wide" data-k="shifttab" type="button" title="Shift+Tab — cycle Claude Code's mode">&#8679;&#8677;</button>
+          <button class="kcap wide" data-k="shifttab" type="button" title="Shift+Tab — cycle the agent's mode">&#8679;&#8677;</button>
           <button class="kcap wide" data-k="ctrlc" type="button">^C</button>
           <button class="kcap" data-k="up" type="button">&#9650;</button>
           <button class="kcap" data-k="down" type="button">&#9660;</button>
@@ -326,10 +328,10 @@
           <label for="edit-args">args</label>
           <input id="edit-args" type="text" autocomplete="off" spellcheck="false"
                  placeholder="--chrome --model opus"
-                 title="Extra arguments passed to claude when this session starts. Takes effect when the session is recreated — use 'save &amp; restart' to apply now." />
+                  title="Extra arguments passed to the agent (claude / grok / opencode) when this session starts. Takes effect when the session is recreated — use 'save &amp; restart' to apply now." />
         </div>
         <p class="form-hint" id="edit-args-hint" hidden>
-          passed to <code>claude</code> on the next start · takes effect when the session is recreated
+          passed to the agent on the next start · takes effect when the session is recreated
         </p>
         <div class="form-actions">
           <button id="edit-cancel" class="btn" type="button">cancel</button>

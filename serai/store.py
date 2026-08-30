@@ -24,7 +24,7 @@ _FIELDS = ("host", "name", "kind", "label", "path", "tags", "args", "owner")
 # Not persisted: it answers "which sessions did I just have open?", which is a
 # property of the current serai run, not durable state. A machine reboot (all
 # sessions gone) is the restore banner's job, driven by the persistent snapshot;
-# this is the narrower "you exited a claude session a moment ago -- resume it?".
+# this is the narrower "you exited an agent session a moment ago -- resume it?".
 _seen_live: dict[str, float] = {}   # host::name -> wall time last seen live
 _live_now: set[str] = set()         # keys live as of the most recent mark_live
 # how long an exited session keeps offering resume (env override for forks/tests)
@@ -118,7 +118,7 @@ def upsert(records: list[dict]) -> None:
         # empty live tags must not clobber good stored tags (the bug this guards)
         if not rec.get("tags") and prior and prior.get("tags"):
             rec["tags"] = prior["tags"]
-        # same rule for the extra `claude` args: a session recreated without its
+        # same rule for the extra agent args: a session recreated without its
         # @serai_args comes back bare, and that must not erase the stored value.
         # A deliberate clear goes through set_args, not through a degraded poll.
         if not rec.get("args") and prior and prior.get("args"):
@@ -161,7 +161,7 @@ def set_tags(host: str, name: str, tags: list) -> None:
 
 
 def set_args(host: str, name: str, args: str) -> None:
-    """Record a deliberate change to a session's extra `claude` args (including a
+    """Record a deliberate change to a session's extra agent args (including a
     clear) straight into the snapshot, so ``upsert``'s sticky rule can't later
     resurrect the old value. A no-op if the session isn't snapshotted yet."""
     data = _load()
@@ -208,10 +208,12 @@ def recently_exited(window: float | None = None) -> list[dict]:
 
     Requires a snapshot record (for the dir/tags/kind needed to relaunch), so an
     explicitly-killed session (``remove`` dropped its record) never resurfaces,
-    and only ``claude`` sessions are offered -- a shell has nothing to resume.
-    Scoped to a recent window so old exits don't pile up; the reboot case, where
-    nothing was seen live this run, stays the restore banner's job.
+    and only *agent* sessions are offered -- a shell has nothing to resume. Scoped
+    to a recent window so old exits don't pile up; the reboot case, where nothing
+    was seen live this run, stays the restore banner's job.
     """
+    from . import sessions            # leaf import: sessions never imports store
+    agents = sessions.AGENT_KINDS
     win = _RESUME_WINDOW if window is None else window
     now = time.time()
     data = _load()
@@ -220,6 +222,6 @@ def recently_exited(window: float | None = None) -> list[dict]:
         if k in _live_now or (now - seen) > win:
             continue
         rec = data.get(k)
-        if rec and rec.get("kind") == "claude":
+        if rec and rec.get("kind") in agents:
             out.append(rec)
     return sorted(out, key=lambda r: (r.get("host", ""), r.get("name", "")))

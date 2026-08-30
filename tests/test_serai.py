@@ -142,6 +142,8 @@ def test_api_hosts_add_endpoint(monkeypatch, tmp_path):
 
 def test_session_name_convention():
     assert sessions.session_name("claude", "webapp") == "cc-webapp"
+    assert sessions.session_name("grok", "api") == "grok-api"
+    assert sessions.session_name("opencode", "web") == "oc-web"
     assert sessions.session_name("shell", "main") == "shell-main"
     # unsafe characters collapse to hyphens
     assert sessions.session_name("claude", "my project!/v2") == "cc-my-project--v2"
@@ -184,6 +186,8 @@ def test_list_sessions_caches_remote_within_ttl(monkeypatch):
 def test_classify_recognizes_naming_schemes():
     c = sessions._classify
     assert c("cc-demo") == ("claude", "demo")          # serai's own convention
+    assert c("grok-api") == ("grok", "api")            # grok- prefix
+    assert c("oc-web") == ("opencode", "web")          # oc- prefix
     assert c("shell-main") == ("shell", "main")
     assert c("webapp-claude") == ("claude", "webapp")  # bare <project>-claude suffix
     assert c("example-term") == ("shell", "example")         # bare <project>-term suffix
@@ -227,6 +231,20 @@ def test_needs_input_detection_is_per_kind():
     assert st("claude", True, 120, "node", q) == "idle"     # you're attached -> not "done"
     assert st("claude", False, 99999, "node", q) == "idle"  # dormant past the done window
 
+    # grok/opencode are agents too: they read their *content*, not the shell's
+    # activity-age/foreground-command signals. A common marker still flags them.
+    m2 = "do you want to proceed?"
+    assert st("grok", False, 999, "grok", m2) == "needs_input"
+    assert st("opencode", False, 999, "opencode", m2) == "needs_input"
+    # parked at their prompt: recently active -> done, attached or dormant -> idle.
+    # (A freshly-active grok pane is NOT "running" off activity age the way a shell
+    #  is -- it has no known busy marker, so it reads done/idle until observed.)
+    assert st("grok", False, 120, "grok", q) == "done"
+    assert st("grok", True, 120, "grok", q) == "idle"
+    assert st("grok", False, 99999, "grok", q) == "idle"
+    assert st("opencode", False, 120, "opencode", q) == "done"
+    assert st("opencode", False, 99999, "opencode", q) == "idle"
+
 
 def test_wait_markers_configurable_via_env(monkeypatch):
     monkeypatch.setenv("SERAI_WAIT_MARKERS", "Spinning Up, custom>>")
@@ -244,6 +262,12 @@ def test_wait_markers_configurable_via_env(monkeypatch):
 def _claude_inner(path, resume=""):
     # the shell-command tmux runs is the element just before the ';' separator
     argv = sessions.attach_argv("local", "cc-x", "claude", path, resume)
+    return argv[:argv.index(";")][-1]
+
+
+def _agent_inner(kind, name, path, resume="", args=""):
+    # the shell-command tmux runs for an agent session of the given kind
+    argv = sessions.attach_argv("local", name, kind, path, resume, args=args)
     return argv[:argv.index(";")][-1]
 
 
@@ -297,6 +321,27 @@ def test_attach_argv_claude_resume_modes():
     assert av("resume") == base + " --resume"
     # unknown/garbage resume value injects nothing (the flag is a fixed literal)
     assert av("; rm -rf ~") == base
+
+
+def test_attach_argv_agent_kinds_run_their_own_command():
+    # grok mirrors claude: its own command, --continue/--resume.
+    assert _agent_inner("grok", "grok-api", "~/git/api") == "cd ~/git/api && grok"
+    assert _agent_inner("grok", "grok-api", "~/git/api", "continue") == "cd ~/git/api && grok --continue"
+    assert _agent_inner("grok", "grok-api", "~/git/api", "resume") == "cd ~/git/api && grok --resume"
+    # opencode: its own command; "resume" has no picker, so it falls back to
+    # --continue (picks up the last session) rather than dropping the intent.
+    assert _agent_inner("opencode", "oc-web", "~/git/web") == "cd ~/git/web && opencode"
+    assert _agent_inner("opencode", "oc-web", "~/git/web", "continue") == "cd ~/git/web && opencode --continue"
+    assert _agent_inner("opencode", "oc-web", "~/git/web", "resume") == "cd ~/git/web && opencode --continue"
+    # extra args ride along for agents exactly as they do for claude
+    assert _agent_inner("grok", "grok-api", "~/git/api", "", "--fast") == "cd ~/git/api && grok --fast"
+
+
+def test_attach_argv_agent_resume_suppressed_by_args():
+    # a session whose args already pick the session wins over the resume dropdown
+    assert _agent_inner("grok", "grok-api", "~/git/api", "resume", "--resume") == "cd ~/git/api && grok --resume"
+    assert _agent_inner("opencode", "oc-web", "~/git/web", "continue", "--session abc") == "cd ~/git/web && opencode --session abc"
+    assert _agent_inner("opencode", "oc-web", "~/git/web", "resume", "--continue") == "cd ~/git/web && opencode --continue"
 
 
 def test_settings_save_load_roundtrip(monkeypatch, tmp_path):
@@ -2493,15 +2538,21 @@ def test_args_win_over_the_resume_dropdown():
     """The args are the command line. Appending our own flag as well produced
     `claude --continue --resume`, and silently overrode a deliberate choice the
     user had written into the args."""
-    # args say nothing -> the picked mode is applied, as before
-    assert sessions.resume_flag("continue", "--chrome") == " --continue"
-    assert sessions.resume_flag("resume", "") == " --resume"
-    # args say something -> serai adds nothing
-    for a in ["--resume", "--chrome --resume", "--continue", "--resume=abc123"]:
-        assert sessions.resume_flag("continue", a) == "", a
-        assert sessions.resume_flag("resume", a) == "", a
+    # args say nothing -> the picked mode is applied, per kind
+    assert sessions.resume_flag("claude", "continue", "--chrome") == " --continue"
+    assert sessions.resume_flag("claude", "resume", "") == " --resume"
+    assert sessions.resume_flag("grok", "resume", "") == " --resume"
+    # opencode has no picker: "resume" falls back to --continue (last session)
+    assert sessions.resume_flag("opencode", "resume", "") == " --continue"
+    # a shell has no command to carry a resume flag on
+    assert sessions.resume_flag("shell", "resume", "") == ""
+    # args say something -> serai adds nothing (matches --resume/--continue/--session)
+    for a in ["--resume", "--chrome --resume", "--continue", "--resume=abc123", "--session abc"]:
+        assert sessions.resume_flag("claude", "continue", a) == "", a
+        assert sessions.resume_flag("claude", "resume", a) == "", a
+        assert sessions.resume_flag("opencode", "resume", a) == "", a
     # ...and a lookalike must not suppress it
-    assert sessions.resume_flag("resume", "--resumable") == " --resume"
+    assert sessions.resume_flag("claude", "resume", "--resumable") == " --resume"
     # end to end through both builders
     assert "claude --continue --resume" not in " ".join(
         sessions.restore_argv("local", "cc-x", "claude", "/tmp/p", "continue", "--resume"))
@@ -2734,8 +2785,22 @@ def test_recently_exited_offers_a_vanished_claude_session(tmp_path, monkeypatch)
     store.mark_live([])                                    # next poll: both gone
     ex = store.recently_exited()
     names = [r["name"] for r in ex]
-    assert names == ["cc-web"], "only the claude session should be resumable"
+    assert names == ["cc-web"], "an agent session resumes; a shell does not"
     assert ex[0]["path"] == "/w" and ex[0]["tags"] == ["p"]   # enough to relaunch
+
+
+def test_recently_exited_offers_every_agent_kind(tmp_path, monkeypatch):
+    """grok and opencode are first-class agents too, not just claude."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store._seen_live.clear(); store._live_now = set()
+    store.upsert([
+        {"host": "local", "name": "grok-api", "kind": "grok", "label": "api", "path": "/a", "tags": []},
+        {"host": "local", "name": "oc-web", "kind": "opencode", "label": "web", "path": "/w", "tags": []},
+    ])
+    store.mark_live(["local::grok-api", "local::oc-web"])
+    store.mark_live([])                                     # both gone
+    names = [r["name"] for r in store.recently_exited()]
+    assert sorted(names) == ["grok-api", "oc-web"], "every agent kind is resumable"
 
 
 def test_recently_exited_excludes_still_live_and_never_seen(tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
-"""Serai -- a single attach point for your terminal, SSH, and Claude Code
-sessions across local and remote hosts.
+"""Serai -- a single attach point for your terminal, SSH, and coding-agent
+(Claude / Grok / OpenCode) sessions across local and remote hosts.
 
 Design notes:
   * Holds no credentials. Remote work goes through your ssh-agent and
@@ -516,11 +516,11 @@ async def api_sessions_saved(request: Request) -> JSONResponse:
 
 @app.get("/api/sessions/exited")
 async def api_sessions_exited(request: Request) -> JSONResponse:
-    """Claude sessions seen live earlier this run but no longer live -- offered
-    on the board as one-click `claude --resume`. Distinct from /saved (the full
-    post-reboot snapshot): this is the narrow "you just /exited this, resume it?"
-    case, recency-scoped so old exits don't pile up. Known hosts only, and only
-    the caller's own."""
+    """Agent sessions seen live earlier this run but no longer live -- offered
+    on the board as one-click resume. Distinct from /saved (the full post-reboot
+    snapshot): this is the narrow "you just /exited this, resume it?" case,
+    recency-scoped so old exits don't pile up. Known hosts only, and only the
+    caller's own."""
     sess = _session(request)
     loop = asyncio.get_event_loop()
     exited = await loop.run_in_executor(_pool, store.recently_exited)
@@ -535,7 +535,7 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
 
     Body may carry ``{"targets": [{"host", "name", "resume"}, ...]}`` to resume a
     chosen subset; without it every saved session is restored. Targets *select*
-    snapshot entries and may choose how a Claude session comes back (``continue``
+    snapshot entries and may choose how an agent session comes back (``continue``
     the last conversation, ``resume`` to open its picker, or ``""`` for a fresh
     one, defaulting to ``continue``). Everything else -- kind, path, tags -- comes
     from serai's own snapshot, never the request, the host is re-validated
@@ -554,8 +554,8 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
     except Exception:
         body = {}
     targets = body.get("targets") if isinstance(body, dict) else None
-    picks: dict[str, str] = {}  # host::name -> how that Claude session comes back
-    arg_picks: dict[str, str] = {}   # host::name -> extra `claude` args, if edited
+    picks: dict[str, str] = {}  # host::name -> how that agent session comes back
+    arg_picks: dict[str, str] = {}   # host::name -> extra agent args, if edited
     if isinstance(targets, list):
         for t in targets:
             if isinstance(t, dict):
@@ -580,12 +580,12 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
         if await loop.run_in_executor(_pool, sessions.session_exists, host, name):
             return {"host": host, "name": name, "ok": True, "skipped": True}
         # The one thing a target may choose (kind/path/tags still come only from
-        # the snapshot): how a Claude session relaunches. Validated against a
+        # the snapshot): how an agent session relaunches. Validated against a
         # fixed set, so an unrecognised value can't mean anything but "fresh".
         resume = picks.get(f"{host}::{name}", "continue")
         if resume not in sessions.RESUME_CHOICES:
             resume = "continue"
-        # Extra `claude` args: the banner may edit them per session, otherwise
+        # Extra agent args: the banner may edit them per session, otherwise
         # they come from the snapshot. Either way they are re-cleaned here, so
         # neither a client nor an old hand-edited record can smuggle anything
         # unquoted into the command (invariant #3).
@@ -792,7 +792,7 @@ async def api_restart(request: Request) -> JSONResponse:
 
 @app.post("/api/args")
 async def api_args(request: Request) -> JSONResponse:
-    """Set a session's extra `claude` arguments (the @serai_args tmux option).
+    """Set a session's extra agent arguments (the @serai_args tmux option).
     Body: {host, name, args: "--chrome"}. Sanitised server-side by clean_args,
     which shlex-quotes every token -- see invariant #3.
 
@@ -1020,7 +1020,7 @@ async def ws_attach(ws: WebSocket) -> None:
         except ValueError:
             pass
 
-    # Extra `claude` args, same deal: remembered on the session so a restore or a
+    # Extra agent args, same deal: remembered on the session so a restore or a
     # later recreate keeps them. clean_args quotes every token, so nothing typed
     # here reaches the shell unquoted (invariant #3); an unparseable value is
     # dropped rather than guessed at, since an attach must not fail on it.

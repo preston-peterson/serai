@@ -1,13 +1,21 @@
 """Discover live tmux sessions on the local machine and on remote hosts, and
 make a best-effort guess at each session's state (running / needs input / idle).
 
-The unifying idea: every session -- local shell, remote shell, or Claude Code --
-lives inside a named tmux session. We name them by convention so we can tell
-them apart and strip the prefix for display:
+The unifying idea: every session -- a shell or a coding agent -- lives inside a
+named tmux session. We name them by convention so we can tell them apart and
+strip the prefix for display:
 
-    cc-<project>     -> a Claude Code session   (kind="claude")
-    shell-<name>     -> a plain shell           (kind="shell")
+    cc-<project>     -> a Claude Code session     (kind="claude")
+    grok-<name>      -> a Grok Build session      (kind="grok")
+    oc-<name>        -> an OpenCode session       (kind="opencode")
+    shell-<name>     -> a plain shell             (kind="shell")
     anything else    -> kind="shell", label = full name
+
+The coding agents (claude/grok/opencode) are "first-class": each has its own
+prefix, its own command that `attach_argv`/`restore_argv` run in the project
+dir, and its own resume-flag mapping. Everything that makes a kind an agent --
+rather than a shell -- is looked up in the `_AGENTS` table below, so adding a
+new agent is a one-line change there plus a row in the UI.
 
 Remote enumeration runs `tmux` over ssh in BatchMode, so it relies on your
 ssh-agent / keys and never prompts for a password -- the app stores no
@@ -84,11 +92,15 @@ def _build_markers() -> dict[str, tuple[str, ...]]:
     defaults; read once at import):
       SERAI_WAIT_MARKERS         applied to every session
       SERAI_WAIT_MARKERS_CLAUDE  applied to cc-* (Claude Code) sessions
+      SERAI_WAIT_MARKERS_GROK    applied to grok-* (Grok Build) sessions
+      SERAI_WAIT_MARKERS_OPENCODE applied to oc-* (OpenCode) sessions
       SERAI_WAIT_MARKERS_SHELL   applied to shell sessions
     """
     return {
         "common": _COMMON_MARKERS + _env_markers("SERAI_WAIT_MARKERS"),
         "claude": _CLAUDE_MARKERS + _env_markers("SERAI_WAIT_MARKERS_CLAUDE"),
+        "grok": _env_markers("SERAI_WAIT_MARKERS_GROK"),
+        "opencode": _env_markers("SERAI_WAIT_MARKERS_OPENCODE"),
         "shell": _SHELL_MARKERS + _env_markers("SERAI_WAIT_MARKERS_SHELL"),
     }
 
@@ -96,18 +108,47 @@ def _build_markers() -> dict[str, tuple[str, ...]]:
 _MARKERS = _build_markers()
 
 
+# The coding-agent kinds that run their own full-screen TUI in a project dir.
+# Each carries its own command, its own naming prefix (invariant #5), and how
+# each "resume" choice maps to a flag on *its own* command line. Anything not in
+# this table is a shell. This is the single place that makes a kind an agent --
+# session_name / attach_argv / restore_argv / _state_for all look up here.
+#
+# Resume flags are fixed literals (never client text), so they stay argv-safe.
+# opencode has no `--resume` picker -- `--continue` picks up its last session,
+# so "resume" falls back to that rather than dropping the user's intent.
+_AGENTS = {
+    "claude":   {"cmd": "claude",   "prefix": "cc-",   "resume": {"continue": " --continue", "resume": " --resume"}},
+    "grok":     {"cmd": "grok",     "prefix": "grok-", "resume": {"continue": " --continue", "resume": " --resume"}},
+    "opencode": {"cmd": "opencode", "prefix": "oc-",   "resume": {"continue": " --continue", "resume": " --continue"}},
+}
+AGENT_KINDS = frozenset(_AGENTS)
+
+# A "working" signal read from the pane's *content*, per agent kind. A Claude TUI
+# shows "esc to interrupt" while a turn is actively running; that is the reliable
+# busy signal because these TUIs repaint constantly, so session_activity (activity
+# age) always looks fresh and is useless. grok/opencode don't (yet) have a known
+# equivalent, so they read "done" while working -- refine the strings below once
+# observed (the pane tail is what state detection sees).
+_AGENT_BUSY = {
+    "claude":   ("esc to interrupt", "esc to cancel"),
+    "grok":     (),
+    "opencode": (),
+}
+
+
 @dataclass
 class Session:
     host: str            # "local" or an ssh alias
     name: str            # raw tmux session name
-    kind: str            # "claude" | "shell"
+    kind: str            # an AGENT_KINDS member (claude/grok/opencode) or "shell"
     label: str           # display label (prefix stripped)
     state: str           # "running" | "needs_input" | "done" | "idle"
     attached: bool
     tags: list[str] = field(default_factory=list)  # per-session @serai_tags
     path: str = ""       # active pane's *live* cwd (used to restore after reboot)
     dir: str = ""        # configured "start in" dir (@serai_dir); "" if unset
-    args: str = ""       # extra `claude` arguments (@serai_args), already
+    args: str = ""       # extra agent arguments (@serai_args), already
                          # shlex-quoted by clean_args; "" if unset
     owner: str = ""      # serai user who created it (@serai_owner). "" means
                          # unowned -- made outside serai, or before this existed
@@ -131,16 +172,19 @@ class Session:
 
 
 def _classify(name: str) -> tuple[str, str]:
-    """(kind, display label). serai's own convention is a cc-<project> /
-    shell-<name> prefix, but many sessions also carry a <project>-claude /
-    <project>-term suffix (possibly *under* serai's shell- prefix, e.g.
-    shell-example-claude). We strip serai's storage prefix first, then let the
-    suffix decide -- so a name's own "-claude" marker wins over a generic
-    shell- prefix -- and fall back to the prefix, then plain shell."""
+    """(kind, display label). serai's own convention is a per-kind storage prefix
+    (cc- / grok- / oc- for the coding agents, shell- for a shell), but many
+    sessions also carry a <project>-claude / <project>-term suffix (possibly
+    *under* serai's shell- prefix, e.g. shell-example-claude). We strip serai's
+    storage prefix first, then let a "-claude" suffix decide -- so a name's own
+    marker wins over a generic shell- prefix -- and fall back to the prefix,
+    then plain shell."""
     core, forced = name, None
-    if name.startswith("cc-"):
-        core, forced = name[3:], "claude"
-    elif name.startswith("shell-"):
+    for kind, spec in _AGENTS.items():
+        if name.startswith(spec["prefix"]):
+            core, forced = name[len(spec["prefix"]):], kind
+            break
+    if forced is None and name.startswith("shell-"):
         core, forced = name[6:], "shell"
     low = core.lower()
     if low.endswith("-claude"):
@@ -233,33 +277,30 @@ def _preview(lines: list[str], n: int = 12, width: int = 120) -> str:
 # busy. Compared lowercased; tmux may prefix a login shell with "-".
 _SHELL_CMDS = {"bash", "-bash", "zsh", "-zsh", "fish", "-fish", "sh", "-sh",
                "dash", "ksh", "tcsh", "csh", "login", "tmux"}
-# A shell is "working" if it saw activity within _WORKING_WINDOW seconds; a
-# Claude session sitting at its prompt shows "done" until it's been quiet for
+# A shell is "working" if it saw activity within _WORKING_WINDOW seconds; an
+# agent session sitting at its prompt shows "done" until it's been quiet for
 # _DONE_WINDOW seconds, then decays to idle. Override with the env vars.
 _WORKING_WINDOW = float(os.environ.get("SERAI_WORKING_WINDOW", "20"))
 _DONE_WINDOW = float(os.environ.get("SERAI_DONE_WINDOW", "1800"))
-# Claude Code prints this in its status line while a turn is actively running.
-# It's the reliable "working" signal for a cc session (session_activity isn't:
-# Claude's TUI repaints constantly, so its activity age always looks fresh).
-_CLAUDE_BUSY = ("esc to interrupt", "esc to cancel")
 
 
 def _state_for(kind: str, attached: bool, secs: float | None, command: str, marker_text: str) -> str:
     """running (working) / needs_input (blocked) / done / idle.
 
-    Claude and shells need different signals. A Claude pane's foreground is always
-    its node process and its TUI repaints, so activity age is meaningless there --
-    we read its *content* instead: a permission prompt is blocked, an
-    "esc to interrupt" status is working, otherwise it's parked at its prompt =
-    done (finished, unread) until you open it or it goes dormant. A shell has no
-    such status line, so we use the activity age and the foreground command.
+    Agents and shells need different signals. A coding-agent pane's foreground is
+    always its own process and its TUI repaints, so activity age is meaningless
+    there -- we read its *content* instead: a permission prompt is blocked, a
+    busy marker (e.g. Claude's "esc to interrupt") is working, otherwise it's
+    parked at its prompt = done (finished, unread) until you open it or it goes
+    dormant. A shell has no such status line, so we use the activity age and the
+    foreground command.
     """
     markers = _MARKERS["common"] + _MARKERS.get(kind, ())
     if marker_text and any(m in marker_text for m in markers):
         return "needs_input"
 
-    if kind == "claude":
-        if marker_text and any(b in marker_text for b in _CLAUDE_BUSY):
+    if kind in AGENT_KINDS:
+        if marker_text and any(b in marker_text for b in _AGENT_BUSY.get(kind, ())):
             return "running"
         # Parked at its prompt: recently active reads as "done" (unread) until you
         # open it (attached) or it ages past the done window; long-dormant is idle.
@@ -373,24 +414,28 @@ def _quote_path(path: str) -> str:
 
 
 def session_name(kind: str, label: str) -> str:
-    """Build a conventional session name from a kind + label."""
+    """Build a conventional session name from a kind + label. An agent kind gets
+    its own storage prefix (cc- / grok- / oc-); anything else is a shell."""
     label = _SAFE_NAME.sub("-", label.strip()) or "session"
-    prefix = "cc-" if kind == "claude" else "shell-"
+    spec = _AGENTS.get(kind)
+    prefix = spec["prefix"] if spec else "shell-"
     return f"{prefix}{label}"
 
 
-_CLAUDE_RESUME = {"continue": " --continue", "resume": " --resume"}
-# The ways a Claude session can come back: fresh, pick the last conversation up,
+# The ways an agent session can come back: fresh, pick the last conversation up,
 # or open its resume picker. A value outside this set falls back to fresh, since
 # the mapping is a lookup rather than interpolation -- nothing to inject.
 RESUME_CHOICES = ("", "continue", "resume")
 
-# Does the user's own args already say how the session comes back?
-_RESUME_IN_ARGS = re.compile(r"(?:^|\s)'?--(?:resume|continue)\b")
+# Does the user's own args already say how the session comes back? Matches the
+# long forms every agent's CLI uses: claude/grok take --resume/--continue,
+# opencode takes --continue/--session. (Short forms like -c/-r aren't matched --
+# an accepted limitation; the documented flows use the long forms.)
+_RESUME_IN_ARGS = re.compile(r"(?:^|\s)'?--(?:resume|continue|session)\b")
 
 
-def resume_flag(resume: str, args: str = "") -> str:
-    """The ` --resume`/` --continue` to append, or "" if the args already say.
+def resume_flag(kind: str, resume: str, args: str = "") -> str:
+    """The ` --resume`/` --continue` to append for `kind`, or "" if args already say.
 
     **The args are the command line**, so they win. Appending a second flag gave
     `claude --continue --resume` when a session had `--resume` in its args and
@@ -400,7 +445,10 @@ def resume_flag(resume: str, args: str = "") -> str:
     """
     if args and _RESUME_IN_ARGS.search(args):
         return ""
-    return _CLAUDE_RESUME.get(resume, "")
+    spec = _AGENTS.get(kind)
+    if not spec:
+        return ""
+    return spec["resume"].get(resume, "")
 
 
 def attach_argv(host: str, name: str, kind: str, path: str | None = None,
@@ -408,15 +456,16 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
                 args: str = "", owner: str = "") -> list[str]:
     """Command that attaches to a session, creating it if absent (tmux new -A).
 
-    Claude Code sessions launch `claude` in the given project directory; shells
-    just start an interactive tmux. Everything runs under a local PTY (see
-    main.py), and remote sessions wrap the same tmux command in ssh -t.
+    Agent sessions launch their own command (`claude` / `grok` / `opencode`) in
+    the given project directory; shells just start an interactive tmux. Everything
+    runs under a local PTY (see main.py), and remote sessions wrap the same tmux
+    command in ssh -t.
 
-    `resume` picks how a *new* claude session starts: "" -> new conversation,
-    "continue" -> `claude --continue` (most recent in the dir), "resume" ->
-    `claude --resume` (interactive picker). The flag is a fixed literal (never
-    client text), so it stays argv-safe; tmux `new -A` only runs the command on
-    create, so reattaching an existing session ignores it.
+    `resume` picks how a *new* agent session starts: "" -> new conversation,
+    "continue" -> most recent in the dir, "resume" -> the interactive picker (for
+    the agents that have one). The flag is a fixed literal per kind (never client
+    text), so it stays argv-safe; tmux `new -A` only runs the command on create,
+    so reattaching an existing session ignores it.
 
     `mouse` toggles tmux mouse mode for this session so the scroll wheel pages
     through its scrollback (under tmux the history lives in copy mode, not in
@@ -436,16 +485,17 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     tmux_cmd = ["tmux"]
     if history is not None:
         tmux_cmd += ["set", "-g", "history-limit", str(int(history)), ";"]
-    # What the session runs. A claude session runs `claude` whether or not it has
-    # a start directory -- without this it used to fall through to the bare `new`
-    # below and come up as an ordinary *shell*, sitting in serai's own working
-    # directory, which then got snapshotted as that session's dir and poisoned
-    # every later restore. A shell with no start dir still takes the bare form so
-    # tmux spawns its own login shell exactly as before.
-    run = f"claude{resume_flag(resume, args)}" if kind == "claude" else ""
-    # Extra `claude` arguments, already shlex-quoted token-by-token by clean_args
-    # -- appended, never interpolated raw (invariant #3). Claude-only: a shell
-    # session has no command of ours to pass them to.
+    # What the session runs. An agent session runs its own command whether or not
+    # it has a start directory -- without this it used to fall through to the bare
+    # `new` below and come up as an ordinary *shell*, sitting in serai's own
+    # working directory, which then got snapshotted as that session's dir and
+    # poisoned every later restore. A shell with no start dir still takes the bare
+    # form so tmux spawns its own login shell exactly as before.
+    spec = _AGENTS.get(kind)
+    run = f"{spec['cmd']}{resume_flag(kind, resume, args)}" if spec else ""
+    # Extra arguments, already shlex-quoted token-by-token by clean_args --
+    # appended, never interpolated raw (invariant #3). Agent-only: a shell session
+    # has no command of ours to pass them to.
     if run and args:
         run = f"{run} {args}"
     if path:
@@ -478,20 +528,21 @@ def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = 
                  args: str = "") -> list[str]:
     """Recreate a session *detached* (``tmux new -A -d``) so it exists again after
     a reboot without opening a terminal. Idempotent: ``-A`` no-ops if the session
-    already exists (the command only runs on create). Claude sessions relaunch
-    with ``--continue`` by default -- picking the last conversation back up in
-    that dir -- while shells come back as a fresh shell. The saved working dir is
-    passed as tmux's ``-c`` start-directory, a separate argv element that is never
-    interpolated, so it stays argv-safe; remote hosts wrap the same tmux command
-    in ssh (invariant #3).
+    already exists (the command only runs on create). Agent sessions relaunch
+    their own command with ``--continue`` by default -- picking the last
+    conversation back up in that dir -- while shells come back as a fresh shell.
+    The saved working dir is passed as tmux's ``-c`` start-directory, a separate
+    argv element that is never interpolated, so it stays argv-safe; remote hosts
+    wrap the same tmux command in ssh (invariant #3).
     """
     cmd = ["tmux", "new", "-A", "-d", "-s", name]
     if path:
         cmd += ["-c", path]
-    if kind == "claude":
+    spec = _AGENTS.get(kind)
+    if spec:
         # args arrives already shlex-quoted from clean_args (invariant #3), and
         # suppresses our resume flag when it carries one of its own
-        cmd.append("claude" + resume_flag(resume, args) + (f" {args}" if args else ""))
+        cmd.append(spec["cmd"] + resume_flag(kind, resume, args) + (f" {args}" if args else ""))
     if host == "local":
         return cmd
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in cmd)]
@@ -624,15 +675,15 @@ _MAX_ARGS = 512
 
 
 def clean_args(raw: str) -> str:
-    """Normalise extra `claude` arguments, returning a shell-safe string.
+    """Normalise extra agent arguments, returning a shell-safe string.
 
     This is the one place user-typed text becomes part of the command string
     tmux hands to a shell, so it is also the only place invariant #3 could be
     broken. The defence is to stop treating it as text: ``shlex.split`` parses it
     into argv tokens the way a shell would, then every token is re-emitted
     through ``shlex.quote``. ``--chrome --resume`` survives verbatim, while
-    ``; rm -rf ~`` comes back as four *quoted* tokens that reach `claude` as
-    literal arguments -- there is no unquoted metacharacter left to act on.
+    ``; rm -rf ~`` comes back as four *quoted* tokens that reach the agent's CLI
+    as literal arguments -- there is no unquoted metacharacter left to act on.
 
     Rejected outright (raising ValueError, so the caller answers 400):
       * unbalanced quotes -- shlex can't parse it, and guessing would be worse
@@ -659,7 +710,7 @@ def clean_args(raw: str) -> str:
 
 
 def set_args_argv(host: str, name: str, args: str) -> list[str]:
-    """Command that stores a session's extra `claude` arguments (@serai_args).
+    """Command that stores a session's extra agent arguments (@serai_args).
 
     Same shape as set_dir_argv/set_tags_argv: it lives on the session itself, so
     it survives with no external store (invariants #1/#4). Like a start dir it
