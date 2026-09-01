@@ -1,0 +1,36 @@
+# Cuts a GitHub release when a version tag is pushed.
+#
+# release.sh is the single source of truth for a release (build the tarball from
+# the tag, verify sha256 + reproducibility, generate the notes, create the
+# release if it's absent, upload the assets). So pushing a `v*` tag is the only
+# release step a human does -- no separate "remember to run release.sh" step,
+# which is how a pushed version went unpublished before.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Create the release and upload its assets; least-privilege otherwise.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # release.sh builds the tarball with `git archive <tag>`, which needs
+          # the tag object present in the checkout, not just the tree.
+          fetch-depth: 0
+
+      # release.sh shells out to `gh` to create the release and upload assets.
+      - name: Install GitHub CLI
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gh
+
+      - name: Cut the release
+        env:
+          # `gh` picks this up automatically; no personal token in the secret.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh

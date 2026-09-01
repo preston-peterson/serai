@@ -57,6 +57,7 @@ fail() { echo -e "${RED}Error:${RESET} $*" >&2; exit 1; }
 
 command -v git >/dev/null       || fail "git is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required (coreutils)"
+command -v sed >/dev/null       || fail "sed is required (used to build the release notes)"
 $DRY || command -v gh >/dev/null || fail "the GitHub CLI (gh) is required to upload"
 
 VERSION="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' serai/__init__.py)"
@@ -132,16 +133,41 @@ ok "two builds of ${TAG} produce identical bytes"
 
 if $DRY; then
     echo
-    echo -e "  ${YELLOW}(dry-run)${RESET} would upload to release ${TAG}:"
+    echo -e "  ${YELLOW}(dry-run)${RESET} would build notes from CHANGELOG.md, create release ${TAG}"
+    echo -e "  ${YELLOW}(dry-run)${RESET} if it doesn't exist, and upload:"
     echo -e "  ${YELLOW}(dry-run)${RESET}   ${DIST}/${TARBALL}"
     echo -e "  ${YELLOW}(dry-run)${RESET}   ${DIST}/${SUMS}"
     echo -e "  ${YELLOW}(dry-run)${RESET} nothing was uploaded."
     exit 0
 fi
 
-gh release view "$TAG" >/dev/null 2>&1 \
-    || fail "no GitHub release for ${TAG}. Create it first:
-  gh release create ${TAG} --title \"serai ${VERSION}\" --notes-file <notes>"
+# The release notes are the version's CHANGELOG section plus the install/upgrade
+# boilerplate, with the verify command carrying *this* release's checksums file.
+# One generator keeps local and CI releases identical: the boilerplate can't
+# drift, and a hand-pasted one can't reference the wrong version's checksums.
+NOTES="$(mktemp)"
+trap 'rm -f "$NOTES"' EXIT
+{
+  sed -n "/^## \[${VERSION}\]$/,/^## \[/p" CHANGELOG.md | sed '$d'
+  printf '\n### Install / upgrade\n\n'
+  printf '```bash\nbash <(curl -fsSL %s)\n```\n\n' \
+    "https://raw.githubusercontent.com/preston-peterson/serai/main/get.sh"
+  printf "or \`./install.sh\` / the ⚙ panel's **Update now**.\n\n"
+  printf '```bash\nsha256sum -c %s\n```\n\n' "${SUMS}"
+  printf '**Full changelog:** https://github.com/preston-peterson/serai/blob/main/CHANGELOG.md\n'
+} > "$NOTES"
+[ -s "$NOTES" ] || fail "release notes came out empty -- refusing to create a bare release"
+ok "generated release notes ($(wc -l < "$NOTES" | tr -d ' ') lines)"
+
+# Create the release if this tag doesn't have one yet -- the normal path for a
+# tag-triggered run. An existing release is left as-is and just re-uploaded.
+if gh release view "$TAG" >/dev/null 2>&1; then
+    ok "release ${TAG} already exists"
+else
+    say "creating release ${TAG}"
+    gh release create "$TAG" --title "serai ${VERSION}" --notes-file "$NOTES"
+    ok "release created"
+fi
 
 say "uploading assets to release ${TAG}"
 gh release upload "$TAG" "${DIST}/${TARBALL}" "${DIST}/${SUMS}" --clobber
