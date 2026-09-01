@@ -129,11 +129,36 @@ def _verify(password: str, rec: dict) -> bool:
     return hmac.compare_digest(got, expected)
 
 
+# When each user's browser last made an authenticated request.
+#
+# serai's tokens are stateless -- an HMAC over {username, expiry} with nothing
+# kept server-side -- so there is no such thing as a list of logged-in users: a
+# valid cookie in a closed browser is indistinguishable from an open one. What
+# can be observed is traffic, and since the UI polls every few seconds, "made a
+# request in the last half minute" is a faithful stand-in for "has serai open".
+# Deliberately in memory: presence is transient, and after a restart every open
+# tab re-announces itself on its next poll.
+_last_seen: dict[str, float] = {}
+
+
+def touch(username: str) -> None:
+    """Note that `username` just made an authenticated request."""
+    if username:
+        _last_seen[username] = time.time()
+
+
+def seen_at(username: str) -> float | None:
+    """Wall-clock time of that user's last authenticated request, or None."""
+    return _last_seen.get(username)
+
+
 def list_users() -> list[dict]:
-    """Usernames + admin flag only -- never the hashes."""
+    """Usernames + admin flag only -- never the hashes. `seen` is the epoch time
+    of that user's last request (see _last_seen), or None if not since startup."""
     users = _load()["users"]
     return sorted(
-        ({"username": u, "admin": bool(r.get("admin"))} for u, r in users.items()),
+        ({"username": u, "admin": bool(r.get("admin")), "seen": _last_seen.get(u)}
+         for u, r in users.items()),
         key=lambda d: d["username"],
     )
 

@@ -9,6 +9,21 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.25.1]
+
+### Fixed
+
+- **CI red on 2.25.0: committed the presence backend that `main.py` already
+  references.** `serai/main.py` calls `auth.touch()` on every authenticated
+  request (the admin-presence hook, item 12), and that line shipped inside the
+  2.25.0 commit — but the `serai/auth.py` definitions it needs (`touch`,
+  `seen_at`, the in-memory `_last_seen`, and the `seen` field on `/api/users`)
+  were still sitting uncommitted. The committed tree therefore called a function
+  that didn't exist, and six API tests that go through the auth middleware
+  failed on every Python in CI. Committing the backend makes the state
+  consistent and finishes item 12's backend; the UI is still not wired to show
+  presence.
+
 ## [2.25.0]
 
 ### Added

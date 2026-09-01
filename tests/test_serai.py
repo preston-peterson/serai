@@ -1239,6 +1239,27 @@ def test_users_admin_crud_and_guards(auth_on):
         auth.remove_user("solo")
 
 
+def test_presence_touch_and_seen(auth_on):
+    """Presence is in-memory and transient: an authenticated request marks the
+    user, and a user who has never made one reads as absent. `seen` is the only
+    observable -- serai's tokens are stateless, so there is no login list."""
+    auth._last_seen.clear()                      # isolate from other tests
+    assert auth.seen_at("alice") is None
+    auth.touch("alice")
+    assert auth.seen_at("alice") is not None
+
+    # /api/users surfaces it: a fresh authenticated request marks the caller,
+    # while a user who exists but never authenticated stays absent.
+    auth.add_user("carol", "longenough", admin=True)
+    auth.add_user("dave", "longenough", admin=True)   # never logs in
+    c = TestClient(app)
+    c.post("/api/login", json={"username": "carol", "password": "longenough"})
+    users = {u["username"]: u for u in c.get("/api/users").json()["users"]}
+    assert users["carol"]["seen"] is not None     # her GET /api/users touched her
+    assert users["dave"]["seen"] is None          # never made a request
+    assert all("seen" in u for u in users.values())
+
+
 def test_ws_rejects_without_session(auth_on):
     auth.add_user("alice", "longenough", admin=True)
     with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
