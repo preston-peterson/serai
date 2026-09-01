@@ -9,6 +9,59 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.25.0]
+
+### Added
+
+- **Hermes is a first-class session kind, alongside Claude, Grok, and OpenCode.**
+  Pick `hermes` from `+ New`; it flows through the rail, board, palette, edit
+  dialog, restart, and resume exactly like the other agents. Same one-row shape
+  as 2.24.0: the `_AGENTS` table carries its command (`hermes`), its `hm-`
+  storage prefix, and its per-kind resume mapping, mirrored by a `KINDS` entry
+  in the UI (glyph ■, teal `hm` chip). `hermes`'s `--resume` takes a session id
+  (no interactive picker), so `resume` — like OpenCode — falls back to
+  `--continue`; the args-still-win rule is unchanged. Busy/done markers read the
+  TUI content like the other agents and are extendable via
+  `SERAI_WAIT_MARKERS_HERMES`.
+
+- **Tag a session from the `+ New` form.** A `tags` field (shown for every kind)
+  sets the session's tags at creation. Like the owner claim, the tags ride in the
+  *same* `tmux new -A` command as the create, so nothing ever observes the
+  session untagged and re-attaching to an existing name (no tags passed) never
+  clobbers what is already there. Input goes through `clean_tags`, the one parser
+  for hostile tag strings.
+
+### Changed
+
+- **Copy and paste give feedback and never kill the agent.** A plain drag is
+  tmux's selection (mouse mode is on, so it owns the on-screen highlight and the
+  full-history scrollback), not xterm's — which is why "highlight, then
+  Ctrl+Shift+C" read the empty xterm buffer and did nothing. Now:
+  - A plain drag still copies on release via tmux's OSC 52 → browser clipboard,
+    and confirms with a brief "copied N chars" toast, so it is visible that the
+    copy already happened (you never have to press anything).
+  - `Ctrl+Shift+C` / `Ctrl+Insert` no longer fall through as a raw key: with an
+    xterm selection (e.g. after a Shift+drag) they copy and confirm; with no
+    selection they are a safe no-op and hint once how to highlight — they can no
+    longer send a stray byte to the PTY or, on the Ctrl+C path, a SIGINT that
+    kills the agent. Plain `Ctrl+C` is untouched and still interrupts.
+  - Paste is unchanged in behaviour (raw bytes, never a bracketed-paste wrapper;
+    Ctrl+V dedup) and its failure path already surfaces a toast.
+
+### Fixed
+
+- **Sessions whose agent lives only in `~/.bashrc` died the instant they were
+  created.** `run.sh` recovers the login shell's PATH so a serai-launched session
+  can find its tool, but it probed *non-interactively* (`-lc`) — and the standard
+  `~/.bashrc` returns early when non-interactive. PATH dirs added there
+  (`~/.opencode/bin`, `~/.grok/bin`, ...) were invisible to the probe, so an
+  opencode/grok session died on create with a `command not found` that tmux
+  erased before you could read it. The probe now runs *interactively* (`-ilc`),
+  so `~/.bashrc` is sourced in full and serai recovers the complete PATH every
+  session will actually run under. (Same failure class as the `~/.local/bin` fix
+  in 2.18.1; the interactive bit is what this needed. All kinds are covered —
+  they resolve their binary the same way, so this is kind-agnostic.)
+
 ## [2.24.0]
 
 ### Added

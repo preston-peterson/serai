@@ -383,6 +383,11 @@ body {
   border-color: color-mix(in srgb, #b58cf0 45%, transparent);
   background: color-mix(in srgb, #b58cf0 12%, transparent);
 }
+.bcard .bkind.hm {
+  color: #5cc0b0;
+  border-color: color-mix(in srgb, #5cc0b0 45%, transparent);
+  background: color-mix(in srgb, #5cc0b0 12%, transparent);
+}
 .bcard .bname { font-family: var(--mono); font-weight: 600; font-size: .9rem; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bcard .bhost { font-family: var(--mono); font-size: .7rem; color: var(--text-faint); flex: none; }
 .bcard .bhost::before { content: "\25C8 "; opacity: .6; }
@@ -588,6 +593,11 @@ body {
   color: #b58cf0;
   border-color: color-mix(in srgb, #b58cf0 45%, transparent);
   background: color-mix(in srgb, #b58cf0 12%, transparent);
+}
+.rail .row .bkind.hm {
+  color: #5cc0b0;
+  border-color: color-mix(in srgb, #5cc0b0 45%, transparent);
+  background: color-mix(in srgb, #5cc0b0 12%, transparent);
 }
 /* Who created a session. Rendered for admins only -- everyone else sees just
    their own sessions, so a chip on each saying "you" would be noise. Muted, so

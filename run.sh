@@ -16,12 +16,15 @@ cd "$(dirname "$0")"
 # installed there (`claude` among them) then aren't found, and a Claude session
 # dies the instant it is created -- tmux prints "claude: command not found",
 # destroys the session, and clears the screen on the way out, so the reason is
-# gone before you can read it. Asking the login shell recovers the real PATH
-# regardless of login ordering, because ~/.profile adds those dirs itself.
+# gone before you can read it. Asking the *interactive* login shell recovers the
+# real PATH regardless of login ordering (~/.profile adds the login dirs).
+# -i is load-bearing: dev-tool PATH dirs (~/.opencode/bin, ~/.grok/bin, ...) live
+# in ~/.bashrc, which returns early when non-interactive, so a bare -l probe never
+# sees them and those sessions die on "command not found" too.
 # Best-effort by design: a shell that hangs, fails, or answers with something
 # that isn't a PATH leaves ours untouched.
 if [ -z "${SERAI_SKIP_PATH_PROBE:-}" ]; then
-  login_path="$(timeout 5 "${SHELL:-/bin/sh}" -lc 'printf %s "$PATH"' </dev/null 2>/dev/null | tail -n1)" || login_path=""
+  login_path="$(timeout 5 "${SHELL:-/bin/sh}" -ilc 'printf %s "$PATH"' </dev/null 2>/dev/null | tail -n1)" || login_path=""
   case ":$login_path:" in
     *:/bin:*|*:/usr/bin:*) export PATH="$login_path" ;;
   esac

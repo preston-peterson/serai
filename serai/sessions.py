@@ -11,7 +11,7 @@ strip the prefix for display:
     shell-<name>     -> a plain shell             (kind="shell")
     anything else    -> kind="shell", label = full name
 
-The coding agents (claude/grok/opencode) are "first-class": each has its own
+The coding agents (claude/grok/opencode/hermes) are "first-class": each has its own
 prefix, its own command that `attach_argv`/`restore_argv` run in the project
 dir, and its own resume-flag mapping. Everything that makes a kind an agent --
 rather than a shell -- is looked up in the `_AGENTS` table below, so adding a
@@ -94,6 +94,7 @@ def _build_markers() -> dict[str, tuple[str, ...]]:
       SERAI_WAIT_MARKERS_CLAUDE  applied to cc-* (Claude Code) sessions
       SERAI_WAIT_MARKERS_GROK    applied to grok-* (Grok Build) sessions
       SERAI_WAIT_MARKERS_OPENCODE applied to oc-* (OpenCode) sessions
+      SERAI_WAIT_MARKERS_HERMES  applied to hm-* (Hermes) sessions
       SERAI_WAIT_MARKERS_SHELL   applied to shell sessions
     """
     return {
@@ -101,6 +102,7 @@ def _build_markers() -> dict[str, tuple[str, ...]]:
         "claude": _CLAUDE_MARKERS + _env_markers("SERAI_WAIT_MARKERS_CLAUDE"),
         "grok": _env_markers("SERAI_WAIT_MARKERS_GROK"),
         "opencode": _env_markers("SERAI_WAIT_MARKERS_OPENCODE"),
+        "hermes": _env_markers("SERAI_WAIT_MARKERS_HERMES"),
         "shell": _SHELL_MARKERS + _env_markers("SERAI_WAIT_MARKERS_SHELL"),
     }
 
@@ -117,10 +119,13 @@ _MARKERS = _build_markers()
 # Resume flags are fixed literals (never client text), so they stay argv-safe.
 # opencode has no `--resume` picker -- `--continue` picks up its last session,
 # so "resume" falls back to that rather than dropping the user's intent.
+# hermes's `--resume` takes a session id/title/'latest' (no interactive picker
+# like claude/grok), so "resume" falls back to `--continue` the same way.
 _AGENTS = {
     "claude":   {"cmd": "claude",   "prefix": "cc-",   "resume": {"continue": " --continue", "resume": " --resume"}},
     "grok":     {"cmd": "grok",     "prefix": "grok-", "resume": {"continue": " --continue", "resume": " --resume"}},
     "opencode": {"cmd": "opencode", "prefix": "oc-",   "resume": {"continue": " --continue", "resume": " --continue"}},
+    "hermes":   {"cmd": "hermes",   "prefix": "hm-",   "resume": {"continue": " --continue", "resume": " --continue"}},
 }
 AGENT_KINDS = frozenset(_AGENTS)
 
@@ -134,6 +139,7 @@ _AGENT_BUSY = {
     "claude":   ("esc to interrupt", "esc to cancel"),
     "grok":     (),
     "opencode": (),
+    "hermes":   (),
 }
 
 
@@ -141,7 +147,7 @@ _AGENT_BUSY = {
 class Session:
     host: str            # "local" or an ssh alias
     name: str            # raw tmux session name
-    kind: str            # an AGENT_KINDS member (claude/grok/opencode) or "shell"
+    kind: str            # an AGENT_KINDS member (claude/grok/opencode/hermes) or "shell"
     label: str           # display label (prefix stripped)
     state: str           # "running" | "needs_input" | "done" | "idle"
     attached: bool
@@ -173,7 +179,7 @@ class Session:
 
 def _classify(name: str) -> tuple[str, str]:
     """(kind, display label). serai's own convention is a per-kind storage prefix
-    (cc- / grok- / oc- for the coding agents, shell- for a shell), but many
+    (cc- / grok- / oc- / hm- for the coding agents, shell- for a shell), but many
     sessions also carry a <project>-claude / <project>-term suffix (possibly
     *under* serai's shell- prefix, e.g. shell-example-claude). We strip serai's
     storage prefix first, then let a "-claude" suffix decide -- so a name's own
@@ -415,7 +421,7 @@ def _quote_path(path: str) -> str:
 
 def session_name(kind: str, label: str) -> str:
     """Build a conventional session name from a kind + label. An agent kind gets
-    its own storage prefix (cc- / grok- / oc-); anything else is a shell."""
+    its own storage prefix (cc- / grok- / oc- / hm-); anything else is a shell."""
     label = _SAFE_NAME.sub("-", label.strip()) or "session"
     spec = _AGENTS.get(kind)
     prefix = spec["prefix"] if spec else "shell-"
@@ -453,13 +459,18 @@ def resume_flag(kind: str, resume: str, args: str = "") -> str:
 
 def attach_argv(host: str, name: str, kind: str, path: str | None = None,
                 resume: str = "", mouse: bool = True, history: int | None = None,
-                args: str = "", owner: str = "") -> list[str]:
+                args: str = "", owner: str = "", tags: str = "") -> list[str]:
     """Command that attaches to a session, creating it if absent (tmux new -A).
 
-    Agent sessions launch their own command (`claude` / `grok` / `opencode`) in
+    Agent sessions launch their own command (`claude` / `grok` / `opencode` / `hermes`) in
     the given project directory; shells just start an interactive tmux. Everything
     runs under a local PTY (see main.py), and remote sessions wrap the same tmux
     command in ssh -t.
+
+    `tags` is a pre-cleaned, comma-joined tag list (see `clean_tags`) applied only
+    on create -- like `owner`, it rides in the same `new -A` command so nothing ever
+    observes the session untagged, and a re-attach to an existing name (where the
+    caller passes no tags) never clobbers what is already there.
 
     `resume` picks how a *new* agent session starts: "" -> new conversation,
     "continue" -> most recent in the dir, "resume" -> the interactive picker (for
@@ -510,6 +521,11 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     # this attach is what creates the session -- see ws_attach.
     if owner:
         tmux_cmd += [";", "set-option", "-t", name, "@serai_owner", clean_owner(owner)]
+    if tags:
+        # Apply clean_tags once more (idempotent): the value is written with
+        # set-option and read back through the `::`-joined listing, so keep it
+        # within the conservative charset exactly as for owner.
+        tmux_cmd += [";", "set-option", "-t", name, "@serai_tags", ",".join(clean_tags(tags.split(",")))]
 
     tmux_cmd += [";", "set-option", "-t", name, "mouse", "on" if mouse else "off"]
     # Publish copy-mode selections as OSC 52 (needs the outer terminal's Ms cap;

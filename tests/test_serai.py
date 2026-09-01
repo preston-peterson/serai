@@ -188,6 +188,7 @@ def test_classify_recognizes_naming_schemes():
     assert c("cc-demo") == ("claude", "demo")          # serai's own convention
     assert c("grok-api") == ("grok", "api")            # grok- prefix
     assert c("oc-web") == ("opencode", "web")          # oc- prefix
+    assert c("hm-chat") == ("hermes", "chat")          # hm- prefix
     assert c("shell-main") == ("shell", "main")
     assert c("webapp-claude") == ("claude", "webapp")  # bare <project>-claude suffix
     assert c("example-term") == ("shell", "example")         # bare <project>-term suffix
@@ -333,6 +334,11 @@ def test_attach_argv_agent_kinds_run_their_own_command():
     assert _agent_inner("opencode", "oc-web", "~/git/web") == "cd ~/git/web && opencode"
     assert _agent_inner("opencode", "oc-web", "~/git/web", "continue") == "cd ~/git/web && opencode --continue"
     assert _agent_inner("opencode", "oc-web", "~/git/web", "resume") == "cd ~/git/web && opencode --continue"
+    # hermes: --resume takes a session id (no interactive picker), so "resume"
+    # falls back to --continue too, exactly like opencode.
+    assert _agent_inner("hermes", "hm-app", "~/git/app") == "cd ~/git/app && hermes"
+    assert _agent_inner("hermes", "hm-app", "~/git/app", "continue") == "cd ~/git/app && hermes --continue"
+    assert _agent_inner("hermes", "hm-app", "~/git/app", "resume") == "cd ~/git/app && hermes --continue"
     # extra args ride along for agents exactly as they do for claude
     assert _agent_inner("grok", "grok-api", "~/git/api", "", "--fast") == "cd ~/git/api && grok --fast"
 
@@ -342,6 +348,7 @@ def test_attach_argv_agent_resume_suppressed_by_args():
     assert _agent_inner("grok", "grok-api", "~/git/api", "resume", "--resume") == "cd ~/git/api && grok --resume"
     assert _agent_inner("opencode", "oc-web", "~/git/web", "continue", "--session abc") == "cd ~/git/web && opencode --session abc"
     assert _agent_inner("opencode", "oc-web", "~/git/web", "resume", "--continue") == "cd ~/git/web && opencode --continue"
+    assert _agent_inner("hermes", "hm-app", "~/git/app", "resume", "--continue") == "cd ~/git/app && hermes --continue"
 
 
 def test_settings_save_load_roundtrip(monkeypatch, tmp_path):
@@ -422,7 +429,7 @@ def test_pty_websocket_bridge(monkeypatch):
     monkeypatch.setattr(
         sessions,
         "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": [
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": [
             "python3", "-u", "-c",
             'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
         ],
@@ -452,7 +459,7 @@ def test_pty_websocket_bridge(monkeypatch):
 def _ws_close_code(monkeypatch, exists):
     # attach to a program that exits immediately, so the PTY EOFs and _close runs
     monkeypatch.setattr(sessions, "attach_argv",
-                        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": ["python3", "-u", "-c", "print('bye')"])
+                        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": ["python3", "-u", "-c", "print('bye')"])
     monkeypatch.setattr(sessions, "session_exists", lambda host, name: exists)
     with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
         for _ in range(20):
@@ -477,7 +484,7 @@ def test_ws_ping_frame_does_not_reach_the_pty(monkeypatch):
     monkeypatch.setattr(
         sessions,
         "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": [
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": [
             "python3", "-u", "-c",
             'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
         ],
@@ -532,7 +539,7 @@ def test_ws_server_sends_keepalive_on_an_idle_attach(monkeypatch):
     monkeypatch.setattr(
         sessions,
         "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="": [
+        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": [
             "python3", "-u", "-c",
             "import sys; print('READY', flush=True); sys.stdin.read()",
         ],
@@ -2521,6 +2528,22 @@ def test_a_new_session_is_claimed_by_its_creator():
     # usernames are sanitised before becoming a tmux option value
     assert sessions.clean_owner("bob; rm -rf ~") == "bobrm-rf"
     assert sessions.clean_owner("a::b") == "ab", "the _FMT separator can't survive"
+
+
+def test_a_new_session_is_tagged_on_create():
+    """Tags ride in the same `new -A` command as the owner claim, so nothing can
+    observe the session untagged in between; a re-attach (no tags) never clobbers."""
+    argv = sessions.attach_argv("local", "shell-x", "shell", tags="work, infra")
+    joined = " ".join(argv)
+    assert "@serai_tags" in joined and "work,infra" in joined
+    assert joined.index("new") < joined.index("@serai_tags"), "claim comes after create"
+    # no tags passed (attaching to something that already exists) -> no claim
+    assert "@serai_tags" not in " ".join(sessions.attach_argv("local", "shell-x", "shell"))
+    # hostile input passes through the one parser before it touches a command:
+    # the ';' that could become a tmux command separator must not survive
+    cleaned = sessions.clean_tags("work; rm -rf ~".split(","))
+    assert cleaned == ["work-rm--rf"] and not any(";" in t for t in cleaned)
+    assert "work; rm" not in " ".join(sessions.attach_argv("local", "shell-x", "shell", tags="work; rm -rf ~"))
 
 
 def test_upsert_keeps_a_stored_owner_when_a_session_comes_back_bare(tmp_path, monkeypatch):

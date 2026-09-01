@@ -8,10 +8,11 @@
 const KINDS = {
   claude:   { glyph: "\u2726", chip: "cc", prefix: "cc-",   cmd: "claude" },   // ✦
   grok:     { glyph: "\u25cf", chip: "gr", prefix: "grok-", cmd: "grok" },     // ●
-  opencode: { glyph: "\u25b2", chip: "oc", prefix: "oc-",   cmd: "opencode" }, // ▲
+  opencode: { glyph: "\u25b2", chip: "oc",   prefix: "oc-",   cmd: "opencode" }, // ▲
+  hermes:   { glyph: "\u25a0", chip: "hm", prefix: "hm-",   cmd: "hermes" },   // ■
   shell:    { glyph: "\u276f", chip: "sh", prefix: "shell-", cmd: null },       // ❯
 };
-const AGENT_KINDS = ["claude", "grok", "opencode"];
+const AGENT_KINDS = ["claude", "grok", "opencode", "hermes"];
 const REFRESH_MS = 5000;
 const MAX_REATTACH = 6;   // consecutive failed reattaches before giving up
 const STABLE_MS = 6000;   // a session must stay up this long to count as healthy
@@ -391,10 +392,19 @@ function createPane() {
   t.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown" || !(e.ctrlKey || e.shiftKey)) return true;
     const ctrl = e.ctrlKey, shift = e.shiftKey;
-    // copy: Ctrl+Shift+C or Ctrl+Insert
+    // copy: Ctrl+Shift+C or Ctrl+Insert. Never let these fall through as a raw
+    // key: with mouse mode on, a plain drag selects in tmux copy mode (not
+    // xterm), so getSelection() is empty even right after a "highlight" -- and
+    // falling through would send a spurious byte to the PTY (or, on the Ctrl+C
+    // path, a SIGINT that kills the agent). No xterm selection -> safe no-op.
     if ((ctrl && shift && e.code === "KeyC") || (ctrl && !shift && e.code === "Insert")) {
-      if (paneCopy(p)) { e.preventDefault(); return false; }
-      return true; // nothing selected -> let Ctrl+C through (SIGINT)
+      e.preventDefault();
+      if (paneCopy(p)) { toast("copied", "ok", 1400); return false; }
+      if (!p._copyHinted) {
+        p._copyHinted = true;
+        toast("no selection to copy -- drag to highlight (it copies on release), or Shift+drag to select", "warn", 5000);
+      }
+      return false;
     }
     // Ctrl+V must not reach the PTY as ^V (quoted-insert) — grok then waits
     // forever and typing dies. return false so xterm doesn't emit it; do not
@@ -420,7 +430,14 @@ function createPane() {
     try {
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const text = new TextDecoder().decode(bytes); // base64 wraps UTF-8 bytes
-      if (text && navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+      if (text && navigator.clipboard) {
+        // A plain drag (mouse mode on) is tmux's selection, not xterm's -- this
+        // is how it reaches the clipboard. Confirm it, because the "highlight,
+        // then I press a key" model never fires here: the copy already happened.
+        navigator.clipboard.writeText(text)
+          .then(() => toast(`copied ${text.length} char${text.length === 1 ? "" : "s"}`, "ok", 1600))
+          .catch(() => {});
+      }
     } catch { /* malformed payload -- ignore */ }
     return true; // handled -- don't let it fall through
   });
@@ -1445,6 +1462,7 @@ function paneOpenSocket(p, target, gen) {
   if (target.path) q.set("path", target.path);
   if (target.resume) q.set("resume", target.resume);
   if (target.args) q.set("args", target.args);   // extra agent args; server re-cleans them
+  if (target.tags) q.set("tags", target.tags);   // tags at create; ignored on re-attach (session exists)
   q.set("mouse", termSettings.scrollbackMouse ? "1" : "0");
   q.set("history", String(termSettings.scrollback));  // tmux history-limit (depth)
 
@@ -2530,6 +2548,7 @@ const nsPathRow = document.getElementById("ns-path-row");
 const nsResume = document.getElementById("ns-resume");
 const nsResumeRow = document.getElementById("ns-resume-row");
 const nsArgs = document.getElementById("ns-args");
+const nsTags = document.getElementById("ns-tags");
 let nsPathDirty = false; // true once the user hand-edits the path
 
 function refreshAgentPath() {
@@ -2595,6 +2614,7 @@ function openNewSession() {
   nsPath.value = "";
   nsResume.value = "";
   nsArgs.value = "";
+  nsTags.value = "";
   nsPathDirty = false;
   syncPathRow();
   nsForm.hidden = false;
@@ -2618,8 +2638,9 @@ function submitNewSession() {
   const path = isAgent ? (typed || "~/git/" + label) : (typed || null);
   const resume = isAgent ? nsResume.value : "";
   const args = isAgent ? nsArgs.value.trim() : "";
+  const tags = nsTags.value.trim();   // any kind; server cleans + applies only on create
   closeNewSession();
-  attach({ host, name: "", kind, label, path, resume, args });
+  attach({ host, name: "", kind, label, path, resume, args, tags });
   setTimeout(loadSessions, 800);
 }
 

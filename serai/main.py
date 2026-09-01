@@ -82,7 +82,12 @@ async def _require_auth(request: Request, call_next):
     (http middleware does not see websocket scopes)."""
     if not auth.auth_enabled() or _is_public(request.url.path):
         return await call_next(request)
-    if auth.verify_token(request.cookies.get(auth.COOKIE)):
+    sess = auth.verify_token(request.cookies.get(auth.COOKIE))
+    if sess:
+        # Every authenticated request is the only evidence serai has that someone
+        # is actually there -- the tokens carry no server-side state. The UI polls
+        # every few seconds, so this makes "has serai open" observable.
+        auth.touch(sess["username"])
         return await call_next(request)
     return JSONResponse({"error": "auth required"}, status_code=401)
 
@@ -997,6 +1002,7 @@ async def ws_attach(ws: WebSocket) -> None:
     _loop = asyncio.get_event_loop()
     exists = await _loop.run_in_executor(_pool, sessions.session_exists, host, name)
     claim = ""
+    claim_tags = ""
     if exists:
         if not _owns(ws_sess, await _loop.run_in_executor(_pool, sessions.get_owner, host, name)):
             await ws.send_text("\r\n\x1b[31m[serai] that session belongs to another "
@@ -1008,6 +1014,10 @@ async def ws_attach(ws: WebSocket) -> None:
         # the same tmux command (after `new -A`) so it can't race the create. An
         # admin opening an unowned session must not silently take it over.
         claim = sessions.clean_owner(ws_sess.get("username") or "")
+        # Tags from the + New form ride the create, same race-free shape as the
+        # claim; a re-attach to an existing name passes no tags, so its tags are
+        # never clobbered. clean_tags is the one parser for hostile input.
+        claim_tags = ",".join(sessions.clean_tags((ws.query_params.get("tags") or "").split(",")))
 
     # Remember an explicit start dir on the session itself, so the file pane and a
     # post-reboot restore keep using it even after the shell cds elsewhere. Best
@@ -1032,7 +1042,7 @@ async def ws_attach(ws: WebSocket) -> None:
         asyncio.get_event_loop().run_in_executor(
             _pool, sessions.run_send, sessions.set_args_argv(host, name, extra))
 
-    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history, extra, claim)
+    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history, extra, claim, claim_tags)
 
     pid, master_fd = pty.fork()
     if pid == 0:  # child -> become the ssh/tmux process

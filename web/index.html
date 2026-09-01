@@ -36,6 +36,7 @@
             <option value="claude">claude</option>
             <option value="grok">grok</option>
             <option value="opencode">opencode</option>
+            <option value="hermes">hermes</option>
           </select>
         </div>
         <div class="form-row">
@@ -58,7 +59,13 @@
           <label for="ns-args">args</label>
           <input id="ns-args" type="text" autocomplete="off" spellcheck="false"
                  placeholder="--chrome"
-                 title="Extra arguments passed to the agent (claude / grok / opencode) when this session starts" />
+                 title="Extra arguments passed to the agent (claude / grok / opencode / hermes) when this session starts" />
+        </div>
+        <div class="form-row">
+          <label for="ns-tags">tags</label>
+          <input id="ns-tags" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="work, infra"
+                 title="Tags for this session, comma-separated (any kind)" />
         </div>
         <div class="form-actions">
           <button id="ns-cancel" class="btn" type="button">cancel</button>
@@ -328,7 +335,7 @@
           <label for="edit-args">args</label>
           <input id="edit-args" type="text" autocomplete="off" spellcheck="false"
                  placeholder="--chrome --model opus"
-                  title="Extra arguments passed to the agent (claude / grok / opencode) when this session starts. Takes effect when the session is recreated — use 'save &amp; restart' to apply now." />
+                  title="Extra arguments passed to the agent (claude / grok / opencode / hermes) when this session starts. Takes effect when the session is recreated — use 'save &amp; restart' to apply now." />
         </div>
         <p class="form-hint" id="edit-args-hint" hidden>
           passed to the agent on the next start · takes effect when the session is recreated
