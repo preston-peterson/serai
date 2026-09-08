@@ -20,6 +20,10 @@
       <span class="topbar-sp"></span>
       <button id="board-toggle" class="btn" type="button" title="Toggle between the board and your open session">&#x229E; board</button>
       <button id="jump" class="srch" type="button" title="Jump to a live or saved session (double-tap Shift)">&#x2315; jump to session&hellip;</button>
+      <div id="fav-picker" class="picker">
+        <button id="favorites-btn" class="picker-btn" type="button" title="Favorites">&#9733; favorites <span class="cnt" id="fav-count"></span></button>
+        <div id="favorites-menu" class="menu favmenu" hidden></div>
+      </div>
       <button id="new-session" class="btn primary" title="New session">+ New</button>
       <button id="settings" class="btn" title="Terminal theme &amp; font">&#x2699;</button>
       <button id="account" class="avatar" title="Account &amp; users" hidden></button>
@@ -67,6 +71,10 @@
                  placeholder="work, infra"
                  title="Tags for this session, comma-separated (any kind)" />
         </div>
+        <label class="form-row fav-check" for="ns-favorite" title="Save to favorites so you can restore it with one click later">
+          <input id="ns-favorite" type="checkbox" />
+          <span class="fav-check-lbl">save to favorites</span>
+        </label>
         <div class="form-actions">
           <button id="ns-cancel" class="btn" type="button">cancel</button>
           <button id="ns-submit" class="btn primary" type="button">attach</button>

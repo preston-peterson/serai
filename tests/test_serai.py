@@ -2655,6 +2655,70 @@ def test_api_args_sanitises_and_records(monkeypatch, tmp_path):
                                           "args": "--a"}).status_code == 400
 
 
+def test_store_favorite_carries_forward_and_set_favorite(tmp_path, monkeypatch):
+    """favorite is store-side (never a live value), so a poll must not clear it --
+    the same rule as tags/dir/args/owner. set_favorite is the only writer that can
+    clear it; favorites() is the flagged subset; a claim on a missing record is a
+    no-op (the create path re-applies it once a poll has snapshotted the session)."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": []}])
+    assert store.get("local", "cc-x")["favorite"] is False
+    store.set_favorite("local", "cc-x", True)
+    assert store.get("local", "cc-x")["favorite"] is True
+    # the next poll sees the session again but carries no favorite -> it must
+    # survive, or a poll would silently un-favorite everything it sees
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": []}])
+    assert store.get("local", "cc-x")["favorite"] is True
+    assert [r["name"] for r in store.favorites()] == ["cc-x"]
+    store.set_favorite("local", "cc-x", False)          # the only thing that clears it
+    assert store.get("local", "cc-x")["favorite"] is False
+    assert store.favorites() == []
+    store.set_favorite("local", "ghost", True)          # no-op on an unknown session
+    assert store.favorites() == []
+
+
+def test_api_favorite_sets_and_scopes(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    client = TestClient(app)
+    # the endpoint answers even before a profile exists (the create claim applies
+    # the flag the moment the first poll snapshots the session)
+    r = client.post("/api/favorite", json={"host": "local", "name": "cc-x", "favorite": True})
+    assert r.status_code == 200 and r.json() == {"ok": True, "favorite": True}
+    # a profile rides /api/sessions/saved -- the favorites menu's data source
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": []}])
+    store.set_favorite("local", "cc-x", True)
+    saved = {r["name"]: r for r in client.get("/api/sessions/saved").json()}
+    assert saved["cc-x"]["favorite"] is True
+    # an unknown host is refused like every other session endpoint (invariant #3)
+    assert client.post("/api/favorite", json={"host": "evil", "name": "cc-x",
+                                              "favorite": True}).status_code == 400
+
+
+def test_api_favorite_refuses_someone_elses_profile(auth_on, monkeypatch):
+    """A guessed name can't favorite or unfavorite someone else's profile (the
+    owner gate), mirroring /api/kill."""
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr(sessions, "session_exists", lambda h, n: False)
+    auth.add_user("alice", "longenough", admin=True)
+    auth.add_user("bob", "longenough")
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": [], "owner": "alice"}])
+    bob = TestClient(app)
+    bob.post("/api/login", json={"username": "bob", "password": "longenough"})
+    assert bob.post("/api/favorite", json={"host": "local", "name": "cc-x",
+                                           "favorite": True}).status_code == 403
+    assert store.get("local", "cc-x")["favorite"] is False
+    admin = TestClient(app)
+    admin.post("/api/login", json={"username": "alice", "password": "longenough"})
+    assert admin.post("/api/favorite", json={"host": "local", "name": "cc-x",
+                                             "favorite": True}).status_code == 200
+    assert store.get("local", "cc-x")["favorite"] is True
+
+
 def test_restart_keeps_the_restore_record_unlike_kill(monkeypatch, tmp_path):
     """The whole point of a separate endpoint: /api/kill calls store.remove, which
     would throw away the record the client needs to bring the session back."""

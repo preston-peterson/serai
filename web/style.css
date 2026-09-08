@@ -1011,6 +1011,45 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .row-split:hover { color: var(--accent); }
 .row-edit:hover { color: var(--accent); }
 .row-del:hover { color: #e24b4a; }
+
+/* favorites -- the star toggle. The star is filled when the saved profile is a
+   favorite; it is store-side (no tmux option), so it is driven by the profile,
+   not the live session. Shown on row hover like the other row actions. */
+.row-fav {
+  flex-shrink: 0; padding: 0 4px;
+  background: transparent; border: none; color: var(--faint);
+  font-size: 12px; cursor: pointer; visibility: hidden;
+}
+.row-fav.on { color: var(--st-blocked); }
+.row-fav:hover { color: var(--st-blocked); }
+.row.session:hover .row-fav { visibility: visible; }
+.rail .row .row-fav { display: none; }
+.rail .row:hover .row-fav { display: inline-block; visibility: visible; }
+/* board card star: sits in the card header, right of the name/host */
+.bcard .star {
+  margin-left: auto; flex-shrink: 0; padding: 0 3px;
+  background: transparent; border: none; color: var(--text-faint);
+  font-size: .82rem; line-height: 1; cursor: pointer;
+}
+.bcard .star:hover { color: var(--text); }
+.bcard .star.on { color: var(--st-blocked); }
+/* the header favorites menu: right-aligned so it never overflows the edge */
+.favmenu { left: auto; right: 0; width: 284px; }
+.favmenu .favstar { color: var(--st-blocked); width: 1em; text-align: center; flex: none; }
+.favmenu .favhost { color: var(--text-faint); font-size: .7rem; flex: none; }
+.favmenu .favact { margin-left: auto; color: var(--accent); font-size: .7rem; flex: none; }
+.favmenu .favrow.live { opacity: .92; }
+.favmenu .favrow.live .favact { color: var(--st-working); }
+.favmenu .favmenu-h { display: flex; align-items: baseline; justify-content: space-between; padding: .1rem .5rem .4rem; }
+.favmenu .favmenu-h b { font: 600 .82rem var(--sans); color: var(--text); }
+.favmenu .favmenu-h .sub { font: 11px var(--mono); color: var(--text-faint); }
+.favmenu .favmenu-empty { padding: .5rem; font: 12px var(--mono); color: var(--text-faint); }
+/* the + New "save to favorites" checkbox row */
+.form-row.fav-check { cursor: pointer; align-items: center; gap: .5rem; padding: .42rem .45rem; }
+.form-row.fav-check:hover { background: var(--raised); border-radius: 6px; }
+.form-row.fav-check input[type=checkbox] { flex: none; width: 14px; height: 14px; accent-color: var(--st-blocked); cursor: pointer; }
+.form-row.fav-check .fav-check-lbl { color: var(--text-dim); font-family: var(--mono); font-size: .78rem; }
+.form-row.fav-check:hover .fav-check-lbl { color: var(--text); }
 .modal-overlay {
   position: fixed; inset: 0; z-index: 50;
   display: flex; align-items: flex-start; justify-content: center;

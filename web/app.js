@@ -1035,6 +1035,7 @@ async function loadSavedSessions() {
     const r = await (await fetch("/api/sessions/saved")).json();
     savedSessions = Array.isArray(r) ? r : [];
   } catch { savedSessions = []; }
+  renderFavMenu(); // the favorites count + menu follow the profile list
 }
 
 function savedNotLive() {
@@ -1172,12 +1173,14 @@ function renderTree() {
         ownerChip(s, "rowner") +
         (tagsHtml ? `<span class="tags">${tagsHtml}</span>` : "") +
         `<span class="rw">${escapeHtml(s.state === "running" ? "now" : fmtAge(s.age))}</span>` +
+        starBtn(s, "row-fav") +
         `<button class="row-split" title="open in a split pane (side by side)">\u25eb</button>` +
         `<button class="row-edit" title="rename / tag">\u270e</button>` +
         (AGENT_KINDS.includes(s.kind)
           ? `<button class="row-restart" title="restart (kill and recreate)">\u27f3</button>` : "") +
         `<button class="row-del" title="kill session">\u2715</button>`;
       row.onclick = () => attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
+      row.querySelector(".row-fav").onclick = (ev) => { ev.stopPropagation(); setFavorite(s.host, s.name, !s.favorite); };
       row.querySelector(".row-split").onclick = (ev) => { ev.stopPropagation(); openInSplit({ host: s.host, name: s.name, kind: s.kind, label: s.label }); };
       row.querySelector(".row-edit").onclick = (ev) => { ev.stopPropagation(); openEditSession(s); };
       const restartBtn = row.querySelector(".row-restart");
@@ -1353,6 +1356,69 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") document.getElementById("ws-menu").hidden = true;
 });
 
+// --- favorites --------------------------------------------------------------
+// The curated, one-click list of saved profiles (item 21). A favorite is a saved
+// profile with the flag set; the menu is the flagged subset, and restoring one
+// reuses the palette's attach path (resume for agents). A live favorite just
+// attaches. The flag is store-side only -- it rides no tmux option.
+function favoriteRecords() {
+  return (savedSessions || []).filter((r) => r.favorite);
+}
+function renderFavMenu() {
+  const menu = document.getElementById("favorites-menu");
+  const count = document.getElementById("fav-count");
+  const btn = document.getElementById("favorites-btn");
+  if (!menu || !btn) return;
+  const favs = favoriteRecords();
+  const liveKeys = new Set(sessionList.map((s) => `${s.host}::${s.name}`));
+  if (count) count.textContent = favs.length ? String(favs.length) : "";
+  menu.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "favmenu-h";
+  head.innerHTML = `<b>Favorites</b><span class="sub">${favs.length ? "one-click restore" : "none yet"}</span>`;
+  menu.appendChild(head);
+  if (!favs.length) {
+    const empty = document.createElement("div");
+    empty.className = "favmenu-empty";
+    empty.innerHTML = "Check &ldquo;save to favorites&rdquo; in + New, or the star on a card.";
+    menu.appendChild(empty);
+    return;
+  }
+  for (const r of favs) {
+    const live = liveKeys.has(`${r.host}::${r.name}`);
+    const row = document.createElement("div");
+    row.className = "menu-row favrow" + (live ? " live" : "");
+    row.innerHTML = `<span class="favstar">\u2605</span>` +
+      `<span class="favname">${escapeHtml(r.label || r.name)}</span>` +
+      (r.host === "local" ? "" : `<span class="favhost">${escapeHtml(r.host)}</span>`) +
+      `<span class="favact">${live ? "attach" : "restore"}</span>`;
+    row.onclick = () => {
+      document.getElementById("favorites-menu").hidden = true;
+      if (live) {
+        const s = sessionList.find((x) => `${x.host}::${x.name}` === `${r.host}::${r.name}`);
+        attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
+      } else {
+        attach({ host: r.host, name: r.name, kind: r.kind, label: r.label || r.name,
+                 path: r.path, resume: AGENT_KINDS.includes(r.kind) ? "resume" : "", args: r.args || "" });
+      }
+    };
+    menu.appendChild(row);
+  }
+}
+document.getElementById("favorites-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = document.getElementById("favorites-menu");
+  menu.hidden = !menu.hidden;
+  if (!menu.hidden) renderFavMenu();
+});
+window.addEventListener("mousedown", (e) => {
+  const p = document.getElementById("fav-picker");
+  if (p && !p.contains(e.target)) document.getElementById("favorites-menu").hidden = true;
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.getElementById("favorites-menu").hidden = true;
+});
+
 function renderBoard() {
   const view = document.getElementById("board-view");
   if (!view || view.hidden) return; // self-guard: no-op while in the attached view
@@ -1400,6 +1466,7 @@ function renderBoard() {
         // "local" on every card is ~40px spent stating the default, and the
         // owner chip needs that room.
         (s.host === "local" ? "" : `<span class="bhost">${escapeHtml(s.host)}</span>`) +
+        starBtn(s, "star") +
       `</div>` +
       `<div class="btail">${s.tail ? tailHtml(s.tail, s.state) : `<span class="d">${escapeHtml(s.path || "")}</span>`}` +
         `${live ? ` <span class="caret"></span>` : ""}</div>` +
@@ -1409,8 +1476,18 @@ function renderBoard() {
         `<button class="mini" type="button" title="${active ? "attached" : "attach"}">${active ? "attached" : "attach"}</button>` +
       `</div>`;
     card.onclick = () => attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
+    card.querySelector(".star").onclick = (ev) => { ev.stopPropagation(); setFavorite(s.host, s.name, !s.favorite); };
     grid.appendChild(card);
   }
+}
+
+// The favorite star, as an HTML fragment. `cls` is the CSS class (the rail reuses
+// the row-action styling; the board card uses .star). Filled when the saved
+// profile is a favorite -- store-side, so driven by s.favorite from the profile.
+function starBtn(s, cls) {
+  const on = !!s.favorite;
+  return `<button class="${cls}${on ? " on" : ""}" type="button" ` +
+    `title="${on ? "Remove from favorites" : "Save to favorites"}">${on ? "\u2605" : "\u2606"}</button>`;
 }
 
 // --- board <-> attached view switch ----------------------------------------
@@ -2549,6 +2626,7 @@ const nsResume = document.getElementById("ns-resume");
 const nsResumeRow = document.getElementById("ns-resume-row");
 const nsArgs = document.getElementById("ns-args");
 const nsTags = document.getElementById("ns-tags");
+const nsFavorite = document.getElementById("ns-favorite");
 let nsPathDirty = false; // true once the user hand-edits the path
 
 function refreshAgentPath() {
@@ -2615,6 +2693,7 @@ function openNewSession() {
   nsResume.value = "";
   nsArgs.value = "";
   nsTags.value = "";
+  nsFavorite.checked = false;
   nsPathDirty = false;
   syncPathRow();
   nsForm.hidden = false;
@@ -2639,9 +2718,40 @@ function submitNewSession() {
   const resume = isAgent ? nsResume.value : "";
   const args = isAgent ? nsArgs.value.trim() : "";
   const tags = nsTags.value.trim();   // any kind; server cleans + applies only on create
+  const favorite = nsFavorite ? nsFavorite.checked : false;
   closeNewSession();
+  const name = sessionName(kind, label);
   attach({ host, name: "", kind, label, path, resume, args, tags });
   setTimeout(loadSessions, 800);
+  if (favorite) claimFavoriteOnCreate(host, name);
+}
+
+// A new session's favorite is store-side (no tmux option to ride the create
+// command, as owner/tags do), and its profile record only exists once the first
+// /api/sessions poll has snapshotted it. So wait for that -- retrying, since a
+// remote host's ssh can take longer than the first poll -- then set it. A name
+// that never comes up (the attach failed) is simply never favorited, which is
+// the right outcome.
+function claimFavoriteOnCreate(host, name, tries = 10) {
+  const key = `${host}::${name}`;
+  const snapshotted = sessionList.some((s) => `${s.host}::${s.name}` === key)
+    || (savedSessions || []).some((r) => `${r.host}::${r.name}` === key);
+  if (snapshotted) { setFavorite(host, name, true); return; }
+  if (tries > 0) setTimeout(() => { loadSessions(); claimFavoriteOnCreate(host, name, tries - 1); }, 800);
+}
+
+// Toggle a profile's favorite flag. Optimistically flips the on-screen star,
+// then confirms with the server (the reload reconciles either way).
+async function setFavorite(host, name, fav) {
+  for (const s of sessionList) if (s.host === host && s.name === name) s.favorite = fav;
+  try {
+    const r = await (await fetch("/api/favorite", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, name, favorite: fav }),
+    })).json();
+    if (r && r.error) toast(escapeHtml(r.error), "error", 4000);
+  } catch { /* the next poll reconciles */ }
+  renderBoard(); renderFavMenu();
 }
 
 document.getElementById("new-session").addEventListener("click", () => {

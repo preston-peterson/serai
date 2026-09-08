@@ -17,8 +17,10 @@ import tempfile
 import time
 from pathlib import Path
 
-# the descriptor kept per session -- enough to recreate it, nothing sensitive
-_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args", "owner")
+# the descriptor kept per session -- enough to recreate it, nothing sensitive.
+# `favorite` is store-side only: it is never read from a live session (it is not a
+# tmux option), so upsert decides it purely from the stored record, never a poll.
+_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args", "owner", "favorite")
 
 # In-memory "seen live this run" tracking, for the resume-after-exit affordance.
 # Not persisted: it answers "which sessions did I just have open?", which is a
@@ -129,6 +131,12 @@ def upsert(records: list[dict]) -> None:
         # "deliberate clear" path to respect here.
         if not rec.get("owner") and prior and prior.get("owner"):
             rec["owner"] = prior["owner"]
+        # favorite is store-side only (set_favorite, never a live value): a poll
+        # carries it forward from the prior record and never clears it. Kept a
+        # clean bool so the JSON is true/false, never null. The live snapshot has
+        # no favorite, so it is decided by the stored state, not the poll -- the
+        # same three-for-three rule as tags/dir/args/owner.
+        rec["favorite"] = bool((prior or {}).get("favorite"))
         # An explicit start-in dir is authoritative over wherever the pane sits.
         # serai's own cwd is disqualified in *either* role: it is not a dir anyone
         # chose, and once it leaks into @serai_dir it would otherwise reassert
@@ -171,6 +179,26 @@ def set_args(host: str, name: str, args: str) -> None:
     if rec.get("args") != args:
         rec["args"] = args
         _atomic_write(data)
+
+
+def set_favorite(host: str, name: str, favorite: bool) -> None:
+    """Record a deliberate favorite/unfavorite (including a create-path claim)
+    straight into the snapshot, so upsert's carry-forward rule can't later change
+    it. A no-op if the session isn't snapshotted yet -- the next poll will add
+    the record (see upsert's favorite rule), and a claim that precedes it is
+    re-applied by the caller once the record exists."""
+    data = _load()
+    rec = data.get(_key(host, name))
+    if rec is None:
+        return
+    if bool(rec.get("favorite")) != bool(favorite):
+        rec["favorite"] = bool(favorite)
+        _atomic_write(data)
+
+
+def favorites() -> list[dict]:
+    """The saved profiles flagged as favorites, in the stable saved() order."""
+    return [r for r in saved() if r.get("favorite")]
 
 
 def remove(host: str, name: str) -> None:

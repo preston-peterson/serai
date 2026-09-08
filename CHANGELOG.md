@@ -9,6 +9,30 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.26.0]
+
+### Added
+
+- **Favorites: a curated, one-click list of saved profiles.** A checkbox in
+  **+ New** saves the new session to favorites; a **★ Favorites** button in the
+  header lists them — a favorite that is live *attaches*, one that is not
+  *restores* in one click (reusing the palette's resume-for-agents path); and a
+  **star** on every board card and rail row toggles an existing session. This is
+  the "restore quicker manually" ask: it is a shortcut over the profiles every
+  create already saves, not a new restore path and not an auto-restore.
+
+- **`favorite` is a stored profile flag, store-side only.** It is never read
+  from a live session (there is no tmux option to ride the create command, as
+  owner and tags do), so `store.upsert` carries it forward and never clears it —
+  the same "a degraded live value must not destroy good stored state" rule as
+  tags/dir/args/owner. A deliberate set/unfavorite goes through
+  `store.set_favorite`, the only writer that can clear it. `/api/sessions` and
+  `/api/sessions/saved` both surface a clean `true`/`false`, and the header menu
+  is owner-scoped like the rest: a user sees their own favorites, an admin sees
+  all. `POST /api/favorite` is owner-gated, so a guessed name can't favorite
+  someone else's profile. Killing a favorite forgets the profile and its flag
+  together (it rides `store.remove`).
+
 ## [2.25.1]
 
 ### Fixed

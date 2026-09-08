@@ -498,6 +498,10 @@ async def api_sessions(request: Request) -> JSONResponse:
             loop.run_in_executor(
                 _pool, sessions.run_send,
                 sessions.set_owner_argv(rec["host"], rec["name"], prior["owner"]))
+        # Favorites are store-side (set_favorite, never a live value), so the
+        # board/rail renders them from the snapshot: a clean true/false, never
+        # null, so the star is always a definite filled/outline state.
+        rec["favorite"] = bool((prior or {}).get("favorite"))
 
     # The snapshot and the live-tracking are serai's own bookkeeping about the
     # whole fleet, so they see everything regardless of who is asking. Only the
@@ -846,6 +850,26 @@ async def api_tags(request: Request) -> JSONResponse:
     await loop.run_in_executor(_pool, store.set_tags, host, name, clean)
     sessions.clear_cache(host)
     return JSONResponse({"ok": bool(ok), "tags": clean})
+
+
+@app.post("/api/favorite")
+async def api_favorite(request: Request) -> JSONResponse:
+    """Set a saved profile's favorite flag (the header favorites list).
+    Body: {host, name, favorite: true|false}. Store-side only -- there is no
+    tmux option to set. Owner-gated like every other per-session mutation, so a
+    guessed name can't favorite or unfavorite someone else's session. A no-op on
+    a name with no profile yet (the create path re-applies once it exists)."""
+    body = await request.json()
+    host = body.get("host", "local")
+    name = body.get("name") or ""
+    if host not in _known_hosts() or not name:
+        return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
+    favorite = bool(body.get("favorite"))
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_pool, store.set_favorite, host, name, favorite)
+    return JSONResponse({"ok": True, "favorite": favorite})
 
 
 @app.post("/api/files/transfer")
