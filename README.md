@@ -3,12 +3,13 @@
 [![CI](https://github.com/preston-peterson/serai/actions/workflows/ci.yml/badge.svg)](https://github.com/preston-peterson/serai/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A single attach point for your terminal, SSH, and Claude Code sessions — across
-the local machine and remote hosts — backed by tmux for persistence.
+A single attach point for your terminal and your coding agents — Claude, Grok,
+OpenCode, and Hermes — across the local machine and remote hosts, backed by tmux
+for persistence.
 
-When you run a dozen coding agents at once, the hard question stops being "where
-is my terminal" and becomes **"which of these needs me right now?"** serai answers
-that first: it opens on a board of every session, colour-coded by what each one is
+When you run a dozen agents at once, the hard question stops being "where is my
+terminal" and becomes **"which of these needs me right now?"** serai answers that
+first: it opens on a board of every session, colour-coded by what each one is
 actually doing, with a few lines of live pane output on each card. Click one to
 attach.
 
@@ -27,10 +28,10 @@ Every session reads as one of four states:
 
 | | meaning | how it's detected |
 |---|---|---|
-| **working** | busy right now | Claude: its status line says a turn is running. Shell: a non-shell process in the foreground, or fresh output. |
+| **working** | busy right now | an agent whose status line says a turn is running (Claude today), or a shell with a non-shell process in the foreground, or fresh output. |
 | **blocked** | waiting on you | a prompt marker in the pane tail — a permission ask, `[sudo] password`, `(y/n)` |
-| **done** | finished, unread | a Claude session parked back at its prompt after recent activity, that you haven't opened |
-| **idle** | at rest | a shell at its prompt, or a session dormant a while |
+| **done** | finished, unread | a coding-agent session parked back at its prompt after recent activity, that you haven't opened |
+| **idle** | at rest | a shell at its prompt, or an agent dormant a while past the done window |
 
 Detection is a heuristic, and deliberately a cheap one: it reuses the pane capture
 already taken for the preview plus two fields tmux hands over for free, so a large
@@ -79,14 +80,20 @@ Every session is `where × what × persistence`:
 
 | | command run under the PTY |
 |---|---|
-| local shell  | `tmux new -A -s shell-main` |
-| local claude | `tmux new -A -s cc-webapp 'cd ~/projects/webapp && claude'` |
+| local shell | `tmux new -A -s shell-main` |
+| local agent | `tmux new -A -s cc-webapp 'cd ~/projects/webapp && claude'` |
 | remote shell | `ssh web-01 -t tmux new -A -s shell-deploy` |
-| remote claude| `ssh web-01 -t tmux new -A -s cc-api 'cd ~/app && claude'` |
+| remote agent | `ssh web-01 -t tmux new -A -s cc-api 'cd ~/app && claude'` |
+
+The agent rows show Claude; Grok, OpenCode, and Hermes run the same way with their
+own command and prefix.
 
 Naming tells serai what a session is:
 
-- `cc-<project>` or `<project>-claude` → a Claude Code session
+- `cc-<project>` or `<project>-claude` → Claude Code
+- `grok-<name>` → Grok Build
+- `oc-<name>` → OpenCode
+- `hm-<name>` → Hermes
 - `shell-<name>` or `<name>-term` → a plain shell
 
 The suffix forms are recognised so sessions you created outside serai are picked
@@ -96,19 +103,20 @@ up as-is, rather than needing a rename.
 terminal and the file browser open there. It's stored on the session, so it
 survives you `cd`-ing elsewhere and is reused when restoring after a reboot.
 
-**Args** — a Claude session can carry extra arguments for `claude`: `--chrome`,
-`--model opus`, whatever you need. Set them in **+ New** or the edit dialog and
-they're remembered with the session, including across a reboot. They're split
-into arguments and quoted individually before they reach the command, so nothing
-you type there can run as a shell command.
+**Args** — a coding-agent session can carry extra arguments for its own command
+(Claude's `--chrome`, `--model opus`, whatever you need). Set them in **+ New** or
+the edit dialog and they're remembered with the session, including across a
+reboot. They're split into arguments and quoted individually before they reach
+the command, so nothing you type there can run as a shell command.
 
 Both take effect when a session is *created* — tmux won't re-run a command for a
 session that already exists — so changing them on a running session needs a
 **restart**: `⟳` on its row, or **save & restart** in the edit dialog. That kills
-and recreates it, running exactly what the args say and nothing more — so put
-`--resume` in them if you want the conversation picker back. It asks first, and
-shows you the command line it's about to run, since anything running in the
-session is lost.
+and recreates it, running exactly what the args say and nothing more — so put its
+resume flag in them if you want to pick up a prior conversation (`--resume` for
+Claude and Grok, `--continue` for OpenCode and Hermes). It asks first, and shows
+you the command line it's about to run, since anything running in the session is
+lost.
 
 **Saved profiles.** Creating a session remembers how to start it (host, kind,
 label, directory, tags, extra args). That profile survives `/exit` and a reboot.
@@ -117,18 +125,25 @@ it will not be offered again.
 
 **Resume is on demand**, not a banner and not a card in front of live work.
 **Jump to session** lists saved-but-not-live profiles (marked *saved*); picking
-one reopens it, and a Claude session lands in `claude --resume` so you choose
-the conversation. **+ New** with a matching label fills the path and args from
-the profile and defaults the session picker to resume. The board and rail only
-show what's running.
+one reopens it, and a Claude or Grok session lands in its `--resume` picker so
+you choose the conversation (OpenCode and Hermes pick up their last one via
+`--continue`). **+ New** with a matching label fills the path and args from the
+profile and defaults the session picker to resume. The board and rail only show
+what's running.
+
+**Favorites** mark the profiles you want one-click restore for. Check **save to
+favorites** in **+ New** — or the star on any board card or rail row — and the
+session joins the **★ Favorites** menu in the top bar: one click attaches it if
+it's running, or restores it if it's not. A favorite is just a saved profile with
+a flag, so it follows the same ownership rules and is forgotten with the profile
+when you ✕ it.
 
 ## On a phone
 
 The same app, laid out for one thumb: the board becomes a single column, the rail
 slides in as a drawer, and the terminal gets a key bar for the keys a soft
-keyboard doesn't have — `esc`, `tab`, `⇧⇥` (Shift+Tab, to cycle Claude Code's
-mode), `^C`, arrows, `|`, `~`, `/`. Long-press a
-file for its actions.
+keyboard doesn't have — `esc`, `tab`, `⇧⇥` (Shift+Tab, to cycle an agent's mode),
+`^C`, arrows, `|`, `~`, `/`. Long-press a file for its actions.
 
 <p>
   <img src="docs/screenshots/mobile-board.png" alt="The board on a phone" width="290">
@@ -267,8 +282,8 @@ Everything below is optional; the defaults are sensible.
 | `SERAI_TLS` / `SERAI_CERT` / `SERAI_KEY` / `SERAI_HOSTNAME` | TLS and the names the generated cert covers |
 | `SERAI_AUTH` / `SERAI_SETUP_CODE` / `SERAI_SESSION_TTL` | login behaviour |
 | `SERAI_WORKING_WINDOW` | seconds of quiet before a shell stops reading as *working* (20) |
-| `SERAI_DONE_WINDOW` | how long a finished Claude session shows as *done* (1800) |
-| `SERAI_WAIT_MARKERS[_CLAUDE\|_SHELL]` | extra phrases that mean "blocked", comma-separated |
+| `SERAI_DONE_WINDOW` | how long a finished agent session shows as *done* (1800) |
+| `SERAI_WAIT_MARKERS` (plus per-kind `_CLAUDE`, `_GROK`, `_OPENCODE`, `_HERMES`, `_SHELL`) | extra phrases that mean "blocked", comma-separated |
 | `SERAI_TMUX_CACHE_TTL` | how long remote session discovery is cached (3s) |
 | `SERAI_UPDATE_CHECK` | `off` disables the update check entirely (it's the only outbound call serai makes) |
 | `SERAI_UPDATE_REPO` | which repo the update check asks about, `owner/name` — for forks |
