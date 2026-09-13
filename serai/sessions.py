@@ -1,5 +1,6 @@
 """Discover live tmux sessions on the local machine and on remote hosts, and
-make a best-effort guess at each session's state (running / needs input / idle).
+make a best-effort guess at each session's state (running / needs input / stuck /
+done / idle).
 
 The unifying idea: every session -- a shell or a coding agent -- lives inside a
 named tmux session. We name them by convention so we can tell them apart and
@@ -149,7 +150,7 @@ class Session:
     name: str            # raw tmux session name
     kind: str            # an AGENT_KINDS member (claude/grok/opencode/hermes) or "shell"
     label: str           # display label (prefix stripped)
-    state: str           # "running" | "needs_input" | "done" | "idle"
+    state: str           # "running" | "needs_input" | "stuck" | "done" | "idle"
     attached: bool
     tags: list[str] = field(default_factory=list)  # per-session @serai_tags
     path: str = ""       # active pane's *live* cwd (used to restore after reboot)
@@ -289,9 +290,109 @@ _SHELL_CMDS = {"bash", "-bash", "zsh", "-zsh", "fish", "-fish", "sh", "-sh",
 _WORKING_WINDOW = float(os.environ.get("SERAI_WORKING_WINDOW", "20"))
 _DONE_WINDOW = float(os.environ.get("SERAI_DONE_WINDOW", "1800"))
 
+# A coding agent can repeat the same "I'll do it" sentence over and over, call no
+# tools, and still look "working" (busy footer) or "done" (turn ended) -- the
+# failure we'd miss on the board. A "stuck" state flags that. Two cheap signals on
+# the pane capture we already take (no extra tmux round trip, no classifier):
+#   1. the same chrome-stripped content line appearing N+ times in a row in one
+#      capture (the pane is visibly looping in its buffer);
+#   2. an unchanged chrome-stripped fingerprint across N consecutive polls (the
+#      pane isn't progressing, but it looks busy -- not a settled prompt).
+# Both lose to needs_input (a real (y/n) is blocked, not stuck) and only apply to
+# agent kinds, never shells. Env knobs mirror the wait-marker ones.
+_STUCK_DUPES = int(os.environ.get("SERAI_STUCK_DUPES", "3"))
+_STUCK_POLLS = int(os.environ.get("SERAI_STUCK_POLLS", "3"))
 
-def _state_for(kind: str, attached: bool, secs: float | None, command: str, marker_text: str) -> str:
-    """running (working) / needs_input (blocked) / done / idle.
+
+def _content_lines(lines: list[str]) -> list[str]:
+    """The chrome-stripped pane tail, normalized for the stuck signals: lowercase,
+    whitespace collapsed, prompt furniture dropped (a box edge or an empty caret
+    is not a repeating line)."""
+    out: list[str] = []
+    for ln in lines:
+        if _is_chrome(ln):
+            continue
+        norm = re.sub(r"\s+", " ", ln.strip().lower())
+        if norm:
+            out.append(norm)
+    return out
+
+
+def _trailing_dupes(content: list[str]) -> int:
+    """How many times the last content line repeats consecutively at the end of
+    the (chrome-stripped) tail. A pane visibly looping reprints the same line, so
+    a run of >= _STUCK_DUPES is signal 1."""
+    if not content:
+        return 0
+    last = content[-1]
+    n = 0
+    for ln in reversed(content):
+        if ln != last:
+            break
+        n += 1
+    return n
+
+
+# Signal 3: a finished turn that *narrated* the work but never did it. The model
+# printed "let me read the css and add a color.", called no tool, and returned to
+# the prompt -- read on the board that looks like `done`, but it is a stop with
+# nothing to show. "Finish: stop" with no tool: treat as stuck, not done. Applied
+# to the last chrome-stripped content line (already lowercased + collapsed), and
+# only for agents; a wait marker still wins (that is blocked, handled upstream in
+# _state_for). Both the prefix form and the embedded "let me read/check/deploy/
+# look" form are covered, per the spec -- a leading "now " must not hide the tell.
+_PLAN_PREFIXES = ("let me ", "i'll ", "i will ")
+_PLAN_HINTS = ("let me read", "let me check", "let me deploy", "let me look")
+
+
+def _planned_leftover(line: str) -> bool:
+    if not line or not line.strip():
+        return False
+    s = re.sub(r"\s+", " ", line.strip().lower())
+    return s.startswith(_PLAN_PREFIXES) or any(h in s for h in _PLAN_HINTS)
+
+
+# Signal 2 gate: a looping pane is *not* a settled prompt. An agent that genuinely
+# finished sits at a clean prompt (optionally with its last reply above); one that
+# is stuck churns through the same working-looking text. Claude shows a busy marker
+# ("esc to interrupt") while a turn is live, so that alone admits it; the
+# no-busy-marker agents (grok/opencode/hermes) are admitted only when the tail holds
+# real repeated content rather than being parked at a bare prompt.
+def _loop_gate(kind: str, marker_text: str, content: list[str]) -> bool:
+    busy = bool(marker_text) and any(b in marker_text for b in _AGENT_BUSY.get(kind, ()))
+    if busy:
+        return True
+    if _AGENT_BUSY.get(kind):
+        # It has a busy marker but isn't showing it: honestly parked, not looping.
+        return False
+    return any(_BARE_PROMPT.match(ln) is None for ln in content)
+
+
+# Signal 2 needs to remember each agent's chrome-stripped fingerprint across polls.
+# In-memory only (host::name -> (fingerprint, consecutive-equal count)); a process
+# restart forgets it, which is fine -- a bare restart can't manufacture a loop.
+# Keyed on host::name like _session_cache, and just as deliberately never persisted.
+_loop_memory: dict[str, tuple[str, int]] = {}
+
+
+def _stuck_polls(kind: str, key: str, content: list[str], marker_text: str) -> bool:
+    """True once the agent's fingerprint has been unchanged for _STUCK_POLLS
+    consecutive listings. A changed tail resets the count; a genuinely parked
+    prompt (loop gate closed) never starts the run."""
+    if kind not in AGENT_KINDS or not _loop_gate(kind, marker_text, content):
+        _loop_memory.pop(key, None)
+        return False
+    fp = "\n".join(content)
+    prev_fp, count = _loop_memory.get(key, (None, 0))
+    count = count + 1 if prev_fp == fp else 1
+    _loop_memory[key] = (fp, count)
+    return count >= _STUCK_POLLS
+
+
+def _state_for(kind: str, attached: bool, secs: float | None, command: str, marker_text: str,
+               dupe_lines: bool = False, stuck_polls: bool = False,
+               planned_leftover: bool = False) -> str:
+    """running (working) / needs_input (blocked) / stuck (looping) / done / idle.
 
     Agents and shells need different signals. A coding-agent pane's foreground is
     always its own process and its TUI repaints, so activity age is meaningless
@@ -300,14 +401,33 @@ def _state_for(kind: str, attached: bool, secs: float | None, command: str, mark
     parked at its prompt = done (finished, unread) until you open it or it goes
     dormant. A shell has no such status line, so we use the activity age and the
     foreground command.
+
+    `dupe_lines` / `stuck_polls` / `planned_leftover` are the stuck signals,
+    precomputed from the pane capture (the pure part stays testable): a looping
+    agent is neither a real turn nor a settled prompt, so it floats up as `stuck`.
+    `planned_leftover` is a finished turn that only *narrated* a step ("let me
+    read the css and add a color.") with no tool call. All lose to an actual
+    prompt (needs_input wins), `planned_leftover` also loses to a live busy turn,
+    and none ever apply to a shell.
     """
     markers = _MARKERS["common"] + _MARKERS.get(kind, ())
     if marker_text and any(m in marker_text for m in markers):
         return "needs_input"
 
     if kind in AGENT_KINDS:
-        if marker_text and any(b in marker_text for b in _AGENT_BUSY.get(kind, ())):
+        busy = bool(marker_text) and any(b in marker_text for b in _AGENT_BUSY.get(kind, ()))
+        # A looping pane (repeating the same line, or holding still while claiming
+        # to work) reads stuck regardless of the busy marker -- but a genuinely
+        # parked prompt (no signal at all) stays done/idle below.
+        if dupe_lines or stuck_polls:
+            return "stuck"
+        if busy:
             return "running"
+        # A finished turn that narrated a step it never took ("let me read the css
+        # and add a color.") with no tool call reads stuck, not done -- the model
+        # stopped before doing the job. Only when it isn't mid-turn (busy above).
+        if planned_leftover:
+            return "stuck"
         # Parked at its prompt: recently active reads as "done" (unread) until you
         # open it (attached) or it ages past the done window; long-dormant is idle.
         if not attached and secs is not None and secs < _DONE_WINDOW:
@@ -358,7 +478,15 @@ def _list_sessions_uncached(host: str) -> list[Session]:
             secs = time.time() - int(activity) if activity.strip() else None
         except ValueError:
             secs = None
-        state = _state_for(kind, attached, secs, command, marker_text)
+        # Stuck detection reuses this same capture. Signal 1 is pure (a repeated
+        # line in the visible tail); signal 2 needs the poll memory keyed by id.
+        content = _content_lines(lines)
+        dupe_lines = kind in AGENT_KINDS and _trailing_dupes(content) >= _STUCK_DUPES
+        stuck_polls = _stuck_polls(kind, f"{host}::{name}", content, marker_text)
+        planned_leftover = kind in AGENT_KINDS and bool(content) and \
+            _planned_leftover(content[-1])
+        state = _state_for(kind, attached, secs, command, marker_text,
+                           dupe_lines, stuck_polls, planned_leftover)
         sessions.append(
             Session(host=host, name=name, kind=kind, label=label, state=state,
                     attached=attached, tags=tags, path=path, dir=start_dir,

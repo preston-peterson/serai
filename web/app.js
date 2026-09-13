@@ -1228,6 +1228,7 @@ function renderTree() {
     head.className = "group-head" + (collapsed ? " collapsed" : "");
     // a collapsed group must not hide an alert: surface the "worst" child state
     const agg = items.some((s) => s.state === "needs_input") ? "needs_input"
+      : items.some((s) => s.state === "stuck") ? "stuck"
       : items.some((s) => s.state === "running") ? "running" : "idle";
     const hasActive = items.some((s) =>
       panes.some((p) => p.active && p.active.host === s.host && p.active.name === s.name));
@@ -1300,8 +1301,8 @@ function renderTree() {
 // (sourced from your ssh-config groups), and a summary strip. Clicking a card
 // attaches and switches to the terminal view; the board button switches back.
 // Same sessionList data, same attach() path.
-const STATE_ORDER = { needs_input: 0, running: 1, done: 2, idle: 3 };
-const STATE_WORD = { needs_input: "blocked", running: "working", done: "done", idle: "idle" };
+const STATE_ORDER = { needs_input: 0, stuck: 1, running: 2, done: 3, idle: 4 };
+const STATE_WORD = { needs_input: "blocked", stuck: "stuck", running: "working", done: "done", idle: "idle" };
 
 // A card's right-aligned timestamp, phrased per state (the mockup's .wn):
 // "active" / "waiting 2m" / "finished 4m" / "2h ago".
@@ -1316,6 +1317,7 @@ function stateWhen(s) {
   const a = fmtAge(s.age);
   if (s.state === "running") return "active";
   if (s.state === "needs_input") return a ? `waiting ${a}` : "waiting";
+  if (s.state === "stuck") return a ? `looping ${a}` : "looping";
   if (s.state === "done") return a ? `finished ${a}` : "finished";
   return a ? `${a} ago` : "";
 }
@@ -1331,7 +1333,7 @@ function tailHtml(tail, state) {
   // The line carrying the signal gets the state's colour, so every non-idle card
   // reads as live the way the mockup does -- real pane text rarely contains the
   // mockup's tidy "✔ done" markers, so state drives the colour, not just content.
-  const sc = { needs_input: "b", done: "h", running: "p" }[state] || "";
+  const sc = { needs_input: "b", done: "h", running: "p", stuck: "s" }[state] || "";
   let last = -1;
   for (let i = lines.length - 1; i >= 0; i--) if (lines[i].trim()) { last = i; break; }
   return lines.map((ln, i) => {
@@ -1522,6 +1524,7 @@ function renderBoard() {
   document.getElementById("board-summary").innerHTML =
     `<span class="sc"><b>${scope.length}</b> session${scope.length === 1 ? "" : "s"}</span>` +
     chip("running", "working") + chip("needs_input", "blocked") +
+    chip("stuck", "stuck") +
     chip("done", "done") + chip("idle", "idle");
 
   const grid = document.getElementById("board-grid");
@@ -1542,7 +1545,7 @@ function renderBoard() {
     const card = document.createElement("div");
     card.className = `bcard st-${s.state}` + (active ? " active" : "");
     const tagsHtml = (s.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
-    const live = s.state === "running" || s.state === "needs_input";
+    const live = s.state === "running" || s.state === "needs_input" || s.state === "stuck";
     card.innerHTML =
       `<div class="bcard-h">` +
         `<span class="bkind ${KINDS[s.kind] ? KINDS[s.kind].chip : ""}">${KINDS[s.kind] ? KINDS[s.kind].chip : "sh"}</span>` +

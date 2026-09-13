@@ -9,6 +9,20 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.28.0]
+
+### Added
+
+- **A `stuck` state for coding agents.** An agent can repeat the same
+  "I'll do it" sentence and look finished, so the board now floats up a
+  looping pane as **stuck** (sorted above working, below blocked), never a
+  real `(y/n)` prompt, and never a shell. Three cheap signals on the pane
+  capture serai already takes: the same chrome-stripped line N times in a
+  row, an unchanged view across N consecutive polls while claiming to work,
+  or a finished turn that only *narrated* a step ("let me read the css and
+  add a color.") with no tool call. Tuned by `SERAI_STUCK_DUPES` and
+  `SERAI_STUCK_POLLS`. See the README state table, now five rows.
+
 ## [2.27.0]
 
 ### Added

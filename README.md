@@ -24,12 +24,13 @@ ssh-agent, and tmux keeps every session alive when you detach.
 you floats to the top, each showing a live preview of the pane so you can triage
 without attaching.
 
-Every session reads as one of four states:
+Every session reads as one of five states:
 
 | | meaning | how it's detected |
 |---|---|---|
 | **working** | busy right now | an agent whose status line says a turn is running (Claude today), or a shell with a non-shell process in the foreground, or fresh output. |
 | **blocked** | waiting on you | a prompt marker in the pane tail — a permission ask, `[sudo] password`, `(y/n)` |
+| **stuck** | looping | an agent repeating the same line in the pane tail, or holding an unchanged view across several polls while claiming to work (never a shell, and never a real `(y/n)`) |
 | **done** | finished, unread | a coding-agent session parked back at its prompt after recent activity, that you haven't opened |
 | **idle** | at rest | a shell at its prompt, or an agent dormant a while past the done window |
 
@@ -284,6 +285,8 @@ Everything below is optional; the defaults are sensible.
 | `SERAI_WORKING_WINDOW` | seconds of quiet before a shell stops reading as *working* (20) |
 | `SERAI_DONE_WINDOW` | how long a finished agent session shows as *done* (1800) |
 | `SERAI_WAIT_MARKERS` (plus per-kind `_CLAUDE`, `_GROK`, `_OPENCODE`, `_HERMES`, `_SHELL`) | extra phrases that mean "blocked", comma-separated |
+| `SERAI_STUCK_DUPES` | consecutive identical lines in one pane capture before an agent reads as *stuck* (3) |
+| `SERAI_STUCK_POLLS` | consecutive unchanged pane captures before an agent reads as *stuck* (3) |
 | `SERAI_TMUX_CACHE_TTL` | how long remote session discovery is cached (3s) |
 | `SERAI_UPDATE_CHECK` | `off` disables the update check entirely (it's the only outbound call serai makes) |
 | `SERAI_UPDATE_REPO` | which repo the update check asks about, `owner/name` — for forks |

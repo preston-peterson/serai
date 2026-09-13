@@ -247,6 +247,158 @@ def test_needs_input_detection_is_per_kind():
     assert st("opencode", False, 99999, "opencode", q) == "idle"
 
 
+def test_stuck_detection_is_pure_and_loses_to_needs_input():
+    # _state_for grew a `stuck` return, driven by two precomputed signals. It
+    # stays a pure classifier: (kind, attached, secs, command, marker_text,
+    # dupe_lines, stuck_polls) -> state.
+    st = sessions._state_for
+    # Signal 1 (repeated line in one capture, passed in as a flag) -> stuck.
+    assert st("grok", False, 999, "grok", "let me deploy and reproduce.",
+              dupe_lines=True) == "stuck"
+    assert st("opencode", False, 999, "opencode", "", dupe_lines=True) == "stuck"
+    assert st("claude", False, 999, "node", "", stuck_polls=True) == "stuck"
+    # Neither signal alone should make a *shell* stuck -- those stay driven by
+    # activity/foreground, and a repeated `ls` line is just a shell.
+    assert st("shell", False, 5, "bash", "", dupe_lines=True) == "running"
+    assert st("shell", False, 5, "bash", "", stuck_polls=True) == "running"
+    assert st("shell", False, 999, "bash", "", dupe_lines=True, stuck_polls=True) == "idle"
+    # A real permission prompt is *blocked*, never stuck -- needs_input wins.
+    m = "do you want to proceed? (y/n)"
+    assert st("claude", False, 999, "node", m, dupe_lines=True, stuck_polls=True) == "needs_input"
+    assert st("grok", False, 999, "grok", m, dupe_lines=True, stuck_polls=True) == "needs_input"
+    # Nothing set and a busy marker shows a genuine turn -> running, not stuck.
+    assert st("claude", False, 999, "node", "thinking… (esc to interrupt)") == "running"
+    # A settled prompt with no loop signal stays done/idle exactly as before.
+    assert st("grok", False, 120, "grok", "") == "done"
+    assert st("grok", False, 99999, "grok", "") == "idle"
+    # Signal 3: a finished turn that narrated a step it never took reads stuck,
+    # not done -- but a wait marker still wins, and a live busy turn stays running.
+    assert st("opencode", False, 120, "opencode", "", planned_leftover=True) == "stuck"
+    assert st("grok", False, 99999, "grok", "", planned_leftover=True) == "stuck"
+    assert st("claude", False, 120, "node", "", planned_leftover=True) == "stuck"
+    m = "do you want to proceed? (y/n)"
+    assert st("opencode", False, 120, "opencode", m, planned_leftover=True) == "needs_input"
+    assert st("claude", False, 999, "node", "thinking… (esc to interrupt)",
+              planned_leftover=True) == "running"
+    # signal 3 never applies to a shell, which has no narrated next-step concept.
+    assert st("shell", False, 999, "bash", "", planned_leftover=True) == "idle"
+
+
+def test_stuck_content_lines_drop_chrome_and_normalize():
+    cl = sessions._content_lines
+    assert sessions._trailing_dupes(cl(["let me deploy and reproduce.",
+                                        "let me deploy and reproduce.",
+                                        "let me deploy and reproduce."])) == 3
+    # box-drawing / prompt furniture is dropped, so it can't count as the repeated
+    # content line (it is chrome, not a looping agent's message).
+    assert sessions._trailing_dupes(cl(["┌─────┐", "│     │", "└─────┘", "> "])) == 0
+    # lowercase and whitespace collapsed, so a case/space-only repeat is a dup.
+    assert sessions._trailing_dupes(cl(["Let me   Deploy and reproduce.",
+                                        "let me deploy and reproduce.",
+                                        "let me deploy and reproduce."])) == 3
+    # a non-trailing repeat (a different line after) is not a run at the end.
+    assert sessions._trailing_dupes(cl(["let me deploy and reproduce.",
+                                        "let me deploy and reproduce.",
+                                        "let me deploy and reproduce.",
+                                        "done: ok"])) == 1
+
+
+def test_stuck_poll_memory_counts_and_resets():
+    # Signal 2: an unchanged chrome-stripped fingerprint across 3 listings -> stuck.
+    # This is the in-memory poll map; it must be fresh for the test.
+    sessions._loop_memory.clear()
+    key = "host-a::oc-example-1"
+    tail = ["let me deploy and reproduce.",
+            "let me deploy and reproduce.",
+            "let me deploy and reproduce.",
+            "let me deploy and reproduce."]
+    assert sessions._stuck_polls("opencode", key, tail, "") is False
+    assert sessions._stuck_polls("opencode", key, tail, "") is False
+    assert sessions._stuck_polls("opencode", key, tail, "") is True    # 3rd identical poll
+    # A changed tail resets the run -- one difference and it starts counting again.
+    changed = ["a different line.", "let me deploy and reproduce.", "let me deploy and reproduce."]
+    assert sessions._stuck_polls("opencode", key, changed, "") is False
+    assert sessions._stuck_polls("opencode", key, changed, "") is False
+    assert sessions._stuck_polls("opencode", key, changed, "") is True
+    # A quietly parked agent (loop gate closed) never accumulates a stuck run.
+    sessions._loop_memory.clear()
+    assert sessions._stuck_polls("claude", key, ["I refactored the scheduler."], "") is False
+    assert sessions._stuck_polls("claude", key, ["I refactored the scheduler."], "") is False
+    assert sessions._stuck_polls("claude", key, ["I refactored the scheduler."], "") is False
+    # A shell is never an across-poll stuck candidate.
+    sessions._loop_memory.clear()
+    assert sessions._stuck_polls("shell", key, tail, "") is False
+
+
+def test_planned_leftover_predicate():
+    pl = sessions._planned_leftover
+    # The invented fixture the job names: a narration that never became a tool call.
+    assert pl("let me read the css and add a color.") is True
+    # prefix forms (already normalized lowercase + collapsed by _content_lines)
+    assert pl("let me deploy and reproduce.") is True
+    assert pl("i'll check the config next") is True
+    assert pl("i will read the docs and fix it") is True
+    # embedded "let me read/check/deploy/look" even when a word trails the start
+    assert pl("now let me read the css and fix it") is True
+    # a leading capital or spaces is fine -- normalization happens before compare
+    assert pl("Let me  check the build") is True
+    # a real explanation of work done is NOT a planning leftover
+    assert pl("i fixed the bug.") is False
+    assert pl("the tests are green") is False
+    assert pl("") is False
+    assert pl("   ") is False
+
+
+def test_stuck_from_repeated_line_via_listing(monkeypatch):
+    # An integration check through the real discovery path: a pane whose tail is
+    # the same working-looking line reads `stuck`, while the same line once does
+    # not. Uses invented fixture names only.
+    now = int(time.time())
+    listing = (
+        f"oc-example-1::0::{now - 60}::::opencode::0::::::::/home/u/app\n"
+        f"shell-demo-1::0::{now - 99999}::::bash::0::::::::/home/u/app\n"
+    )
+    def fake_run(argv, timeout=6):
+        if "list-sessions" in argv:
+            return listing
+        if "capture-pane" in argv:
+            if "oc-example-1" in " ".join(argv):
+                return ("A line above\nlet me deploy and reproduce.\n"
+                        "let me deploy and reproduce.\nlet me deploy and reproduce.\n")
+            return "ls -la\nsome file listing\n"
+        return ""
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    sessions._loop_memory.clear()
+    by = {s.name: s for s in sessions._list_sessions_uncached("local")}
+    assert by["oc-example-1"].state == "stuck"
+    # a shell repeating output is still handled by the shell path -> idle here
+    assert by["shell-demo-1"].state == "idle"
+
+
+def test_stuck_from_planned_leftover_via_listing(monkeypatch):
+    # Signal 3 through the real discovery path: an agent that parked at its
+    # prompt with a narrated-next-step last line reads stuck, not done. A unique
+    # finished reply stays done, and a shell never reads stuck.
+    now = int(time.time())
+    listing = (
+        f"cc-example-1::0::{now - 60}::::claude::0::::::::/home/u/app\n"
+        f"shell-demo-2::0::{now - 99999}::::bash::0::::::::/home/u/app\n"
+    )
+    def fake_run(argv, timeout=6):
+        if "list-sessions" in argv:
+            return listing
+        if "capture-pane" in argv:
+            if "cc-example-1" in " ".join(argv):
+                return ("A line above\nlet me read the css and add a color.\n")
+            return "ls -la\nsome file listing\n"
+        return ""
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    sessions._loop_memory.clear()
+    by = {s.name: s for s in sessions._list_sessions_uncached("local")}
+    assert by["cc-example-1"].state == "stuck"
+    assert by["shell-demo-2"].state == "idle"
+
+
 def test_wait_markers_configurable_via_env(monkeypatch):
     monkeypatch.setenv("SERAI_WAIT_MARKERS", "Spinning Up, custom>>")
     monkeypatch.setenv("SERAI_WAIT_MARKERS_CLAUDE", "awaiting approval")

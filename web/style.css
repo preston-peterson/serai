@@ -24,6 +24,7 @@
   --text-faint: #5c6675;
   --st-working: #5cb27a;
   --st-blocked: #e0a53a;
+  --st-stuck: #d9536b;   /* rose/red -- a looping pane, distinct from working/blocked */
   --st-done: #3fb6ad;
   --st-idle: #6e7681;
   --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -269,6 +270,7 @@ body {
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--faint); display: inline-block; }
 .dot.running { background: var(--green); }
 .dot.needs_input { background: var(--amber); }
+.dot.stuck { background: var(--st-stuck); }
 .dot.idle { background: var(--faint); }
 .dot.done { background: var(--teal); }
 
@@ -348,6 +350,7 @@ body {
 .bcard.active { border-color: var(--accent); }
 .bcard.st-running { --state: var(--st-working); }
 .bcard.st-needs_input { --state: var(--st-blocked); }
+.bcard.st-stuck { --state: var(--st-stuck); }
 .bcard.st-done { --state: var(--st-done); }
 .bcard.st-idle { --state: var(--st-idle); }
 /* an exited claude session, offered for resume: dimmed, with an accented
@@ -414,6 +417,7 @@ body {
 }
 .bcard .btail .p { color: var(--st-working); }
 .bcard .btail .b { color: var(--st-blocked); }
+.bcard .btail .s { color: var(--st-stuck); }
 .bcard .btail .a { color: var(--accent); }
 .bcard .btail .h { color: var(--st-done); }
 .bcard .btail .d { color: var(--text-faint); }
