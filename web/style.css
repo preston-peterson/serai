@@ -493,9 +493,10 @@ body {
   .keybar {
     flex: none; gap: .3rem; padding: .4rem .5rem;
     background: var(--panel); border-top: 1px solid var(--border);
-    overflow-x: auto; scrollbar-width: none;
+    flex-wrap: wrap;   /* wrap, never a hidden horizontal scroll: a phone has no
+                          visible scrollbar, so an overflowing row would hide the
+                          page keys (unreachable = they don't exist). */
   }
-  .keybar::-webkit-scrollbar { display: none; }
   .kcap {
     flex: none; font-family: var(--mono); font-size: .8rem;
     padding: .42rem .62rem; border: 1px solid var(--border); border-radius: 7px;
@@ -543,6 +544,30 @@ body {
   #file-menu.sheet .ctx-sep { margin: .3rem .5rem; }
   /* destructive action reads as destructive, as in the mockup */
   #file-menu.sheet #fm-delete:not(.disabled) { color: var(--st-blocked); }
+
+  /* Terminal + key bar + bottom nav own the screen while attached. The file
+     browser is NOT a split on a phone: it starts hidden, and the nav's Files
+     button raises it as a bottom sheet. `.main` sits between the top bar and
+     the nav, so `position:absolute` on the pane overlays the terminal and
+     docks the sheet exactly on top of the nav -- the nav stays tappable, so
+     Board/Jump/New/Files all dismiss it and it can never trap a file. */
+  .main .files-pane { display: none; }   /* closed by default on a phone */
+  body.phone-files-open .main .files-pane {
+    display: flex; flex-direction: column;
+    position: absolute; inset: 0; z-index: 75;
+    background: var(--surface);
+  }
+  /* the drag bar is a desktop affordance; the sheet is a fixed height */
+  .main .files-pane .vsplit { display: none; }
+  body.phone-files-open .main .files-pane .files { flex: 1; min-height: 0; height: auto; }
+  @keyframes files-sheet-up { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
+  body.phone-files-open .main .files-pane { animation: files-sheet-up .18s ease-out; }
+
+  /* Text inputs must stay >=16px or Safari/Chrome auto-zoom the whole layout
+     as soon as one is focused -- the jump that squeezes a 390px terminal. A
+     plain `input` rule loses to the app's more specific `.form-row input`
+     (0,1,1 vs 0,0,1) font-sizes, so it must win by flag, not specificity. */
+  #app input, #app select, #app textarea { font-size: 16px !important; }
 }
 
 /* --- session rail: the attached view's session list (mockup .rail/.rrow/.rail-h).
@@ -678,6 +703,10 @@ body {
 }
 .pane-head .muted, .muted { color: var(--muted); }
 .pane-head .mono { font-family: var(--mono); font-size: 12px; }
+/* The file browser is its own column: the drag bar, header, upload strip, and
+   the list. Desktop keeps it as a split below the terminal (drag to resize);
+   phone re-anchors this same block as a bottom sheet (see the 820px query). */
+.files-pane { display: flex; flex-direction: column; flex: none; min-height: 0; }
 .files-head { border-top: 1px solid var(--border); }
 .files-head .upload, #files-refresh { flex-shrink: 0; }
 .files-toggle { flex-shrink: 0; padding: 2px 7px; font-size: 11px; line-height: 1; }

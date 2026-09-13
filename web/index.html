@@ -2,9 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- viewport-fit=cover plus the safe-area paddings make the app reach the
+       real screen edges on an iPhone; initial-scale=1 keeps inputs from zooming. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0e1116" />
+  <!-- PWA: Add to Home Screen opens serai standalone (no Safari/Chrome chrome),
+       reusing the existing login cookie. No service worker -- the PTY is live
+       and must never be cached. -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="serai" />
   <title>serai</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="apple-touch-icon" href="/static/icon-180.png" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
   <link rel="stylesheet" href="/static/xterm.min.css" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
@@ -119,6 +131,8 @@
           <button class="kcap wide" data-k="tab" type="button">tab</button>
           <button class="kcap wide" data-k="shifttab" type="button" title="Shift+Tab — cycle the agent's mode">&#8679;&#8677;</button>
           <button class="kcap wide" data-k="ctrlc" type="button">^C</button>
+          <button class="kcap wide" data-k="pageup" type="button" title="Page up — scroll back through a full-screen agent">&#8679;&#8963;</button>
+          <button class="kcap wide" data-k="pagedown" type="button" title="Page down — scroll forward in a full-screen agent">&#8681;&#8963;</button>
           <button class="kcap" data-k="up" type="button">&#9650;</button>
           <button class="kcap" data-k="down" type="button">&#9660;</button>
           <button class="kcap" data-k="left" type="button">&#9664;</button>
@@ -129,30 +143,32 @@
           <button class="kcap" data-k="dash" type="button">-</button>
         </div>
 
-        <div id="vsplit" class="vsplit" title="drag to resize"></div>
+        <div id="files-pane" class="files-pane">
+          <div id="vsplit" class="vsplit" title="drag to resize"></div>
 
-        <div class="pane-head files-head">
-          <button id="files-toggle" class="btn files-toggle" type="button" title="Collapse the file browser">▾</button>
-          <span id="files-host" class="mono muted"></span>
-          <div id="files-crumbs" class="files-crumbs" title="click a segment to jump — click the empty end (or Ctrl+L) to type a path"></div>
-          <input id="files-path" class="path-input" type="text" autocomplete="off"
-                 spellcheck="false" placeholder="type a path, Enter to go" hidden />
-          <button id="files-refresh" class="btn" type="button" title="refresh">↻</button>
-          <label class="btn upload">
-            upload<input id="upload" type="file" hidden />
-          </label>
-        </div>
-        <div id="upload-bar" class="upload-bar" hidden>
-          <span id="upload-label" class="mono"></span>
-          <div class="upbar"><div id="upbar-fill" class="upbar-fill"></div></div>
-        </div>
-        <div id="files" class="files" tabindex="0">
-          <div id="files-cols" class="files-cols">
-            <span class="fcol fcol-name" data-sort="name">Name<span class="sort-ind"></span></span>
-            <span class="fcol fcol-size" data-sort="size" data-col="size"><span class="col-resize"></span>Size<span class="sort-ind"></span></span>
-            <span class="fcol fcol-date" data-sort="mtime" data-col="date"><span class="col-resize"></span>Modified<span class="sort-ind"></span></span>
+          <div class="pane-head files-head">
+            <button id="files-toggle" class="btn files-toggle" type="button" title="Collapse the file browser">▾</button>
+            <span id="files-host" class="mono muted"></span>
+            <div id="files-crumbs" class="files-crumbs" title="click a segment to jump — click the empty end (or Ctrl+L) to type a path"></div>
+            <input id="files-path" class="path-input" type="text" autocomplete="off"
+                   spellcheck="false" placeholder="type a path, Enter to go" hidden />
+            <button id="files-refresh" class="btn" type="button" title="refresh">↻</button>
+            <label class="btn upload">
+              upload<input id="upload" type="file" hidden />
+            </label>
           </div>
-          <div id="file-rows"></div>
+          <div id="upload-bar" class="upload-bar" hidden>
+            <span id="upload-label" class="mono"></span>
+            <div class="upbar"><div id="upbar-fill" class="upbar-fill"></div></div>
+          </div>
+          <div id="files" class="files" tabindex="0">
+            <div id="files-cols" class="files-cols">
+              <span class="fcol fcol-name" data-sort="name">Name<span class="sort-ind"></span></span>
+              <span class="fcol fcol-size" data-sort="size" data-col="size"><span class="col-resize"></span>Size<span class="sort-ind"></span></span>
+              <span class="fcol fcol-date" data-sort="mtime" data-col="date"><span class="col-resize"></span>Modified<span class="sort-ind"></span></span>
+            </div>
+            <div id="file-rows"></div>
+          </div>
         </div>
       </main>
     </div>

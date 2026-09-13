@@ -384,6 +384,12 @@ def test_read_apis(monkeypatch, ssh_config):
 
     assert client.get("/").status_code == 200
     assert client.get("/static/app.js").status_code == 200
+    # PWA installability: manifest + the raster icons it references must be
+    # reachable over /static (an SPA shell /static is auth-public).
+    assert client.get("/static/manifest.webmanifest").status_code == 200
+    assert client.get("/static/icon-192.png").status_code == 200
+    assert client.get("/static/icon-512.png").status_code == 200
+    assert client.get("/static/icon-180.png").status_code == 200
 
     hosts = client.get("/api/hosts").json()
     assert len(hosts) == 3

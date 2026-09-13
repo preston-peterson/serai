@@ -73,16 +73,25 @@ function termOptions() {
     cursorStyle: termSettings.cursorStyle,
     drawBoldTextInBrightColors: termSettings.boldBright,
     theme: TERM_THEMES[termSettings.theme] || TERM_THEMES["GNOME Dark"],
+    // The soft keyboard opening/closing refits the terminal; without keepFocus
+    // that resize blurs the pane and the next keystroke goes elsewhere.
+    keepFocus: true,
   };
 }
 
 // Size a pane's terminal: fit to its area, or to a fixed column count (rows
 // always follow the pane height). paneRefit() also pushes the size to tmux.
 function paneFit(p) {
+  const dims = p.fit.proposeDimensions();
   if (termSettings.cols > 0) {
-    const dims = p.fit.proposeDimensions();
-    p.term.resize(termSettings.cols, (dims && dims.rows) || p.term.rows || 24);
-  } else {
+    // A fixed column count must never exceed what the pane can actually show: a
+    // desktop-bred 120-col setting on a 390px phone would otherwise draw 120
+    // columns into a ~65-col canvas, and every full-width TUI line wraps and
+    // overlaps (the garbled pane). Clamp to the fitted width, which FitAddon
+    // already computes from the container. Rows still follow the pane height.
+    const cols = dims ? Math.min(termSettings.cols, dims.cols) : termSettings.cols;
+    p.term.resize(cols, (dims && dims.rows) || p.term.rows || 24);
+  } else if (dims) {
     p.fit.fit();
   }
 }
@@ -319,13 +328,18 @@ function createPane() {
       ev.preventDefault();     // stop the page rubber-banding under the terminal
 
       // Exact-line tmux scrolling only works when tmux owns the scrollback. A
-      // full-screen app (Claude Code's TUI, vim, less) runs on the ALTERNATE
-      // screen, which has no tmux history at all -- `copy-mode` there enters
-      // copy mode and scrolls nothing, which is exactly how this regressed.
-      // For those panes the wheel is correct: xterm encodes it and the app
-      // scrolls its own view, the same as a desktop wheel.
+      // full-screen app (opencode / claude / grok / hermes, vim, less) runs on
+      // the ALTERNATE screen, which has no tmux history at all -- `copy-mode`
+      // there enters copy mode and scrolls nothing. We used to dispatch a wheel
+      // event here, but tmux's `mouse on` preferences grep the wheel for its own
+      // copy-mode bindings and the agent's own mouse-capture can swallow them,
+      // so nothing scrolled. The reliable, universal scroll for these
+      // charm/bubbletea TUIs is PageUp/PageDown, which every supported agent
+      // binds to scroll its own viewport -- so send those key sequences straight
+      // down the socket. Byte-for-byte identical to a real keyboard, so no
+      // tmux/mouse layer can intercept it.
       if (paneOnAltScreen(pane)) {
-        wheelScroll();
+        pageKeyScroll();
         return;
       }
 
@@ -345,9 +359,11 @@ function createPane() {
       wheelScroll();   // socket not up: the wheel, calibrated to track the finger
     }, { passive: false });
 
-    // The wheel path, calibrated so content tracks the finger. Used for
-    // alternate-screen panes (the app scrolls itself) and as the fallback when
-    // the attach socket is down.
+    // The wheel path, calibrated so content tracks the finger. Only a fallback
+    // now -- used when a NORMAL pane's socket is down (where tmux still owns the
+    // history) or as a best effort for an alt-screen pane with no socket. For
+    // alt-screen panes with a socket, pageKeyScroll() is preferred (PageUp/PageDown
+    // is the scroll every charm TUI binds, and tmux can't intercept it).
     function wheelScroll() {
       const step = notchDistance();
       const notches = Math.trunc(acc / step);
@@ -364,6 +380,45 @@ function createPane() {
           deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true,
         }));
       }
+    }
+
+    // Page-up/down scroll for an alt-screen agent: send `\x1b[5~`/`\x1b[6~` over
+    // the pane's own socket, exactly as if the user pressed the keys. Each press
+    // scrolls ~one viewport in the agent, so one press per pane-height of drag
+    // keeps content tracking ~1:1. Coalesced with the same timer shape as the
+    // line path so a fast flick can't queue a burst that keeps arriving after
+    // the finger stops.
+    let pendingKeys = 0, keyTimer = null, lastKeySent = 0;
+    const PAGE_MS = 55;
+    function flushKeys() {
+      if (keyTimer) return;
+      const wait = Math.max(0, PAGE_MS - (Date.now() - lastKeySent));
+      keyTimer = setTimeout(() => {
+        keyTimer = null;
+        const count = Math.min(Math.abs(pendingKeys), 6); // cap a stray fling
+        if (!count) return;
+        const seq = pendingKeys > 0 ? "\x1b[5~" : "\x1b[6~";  // +ve = back into history
+        pendingKeys = 0;
+        lastKeySent = Date.now();
+        try {
+          const bytes = new TextEncoder().encode(seq.repeat(count));
+          pane.ws.send(bytes);
+        } catch { /* socket went away mid-gesture -- the drag just stops */ }
+      }, wait);
+    }
+    function pageKeyScroll() {
+      if (!pane.ws || pane.ws.readyState !== WebSocket.OPEN) { wheelScroll(); return; }
+      // One page-press is unavoidably coarse (each moves a whole screen worth in
+      // the agent), so don't gate it on a full pane-height or a normal ~400px
+      // swipe would never move at all. A third of a pane-height per press keeps
+      // a swipe responsive without flinging through the whole log; the cap in
+      // flushKeys() reins in a fast flick.
+      const page = Math.max(90, surface.clientHeight * 0.3);
+      const n = Math.trunc(acc / page);
+      if (!n) return;
+      acc -= n * page;
+      pendingKeys += n;
+      flushKeys();
     }
 
     const end = () => { lastY = lastX = null; acc = 0; mode = null; };
@@ -607,6 +662,36 @@ function updateSplitChrome() {
 }
 
 window.addEventListener("resize", refitAll);
+
+// The soft keyboard shrinks the *visible* viewport below 100vh (iOS Safari
+// keeps innerHeight at the layout height and only moves visualViewport, so a
+// 100vh terminal runs under the keyboard and hides its last lines). Pin #app to
+// the visible height and refit each pane, which resizes the terminal and pushes
+// the new rows to tmux -- the pane shrinks, so the cursor stays visible. Also
+// fixes the iOS URL-bar/100vh bug; harmless on desktop (vv.height == innerHeight,
+// which is what 100vh already resolves to).
+let lastVisH = 0;
+let vvpending = null;
+function applyVisualViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const h = Math.round(vv.height);
+  if (h === lastVisH) return;
+  lastVisH = h;
+  document.getElementById("app").style.height = h + "px";
+  // The soft keyboard animates in over many small visualViewport heights, each
+  // of which would resize tmux mid-draw -- a full-screen alt-screen TUI (the
+  // GPU dashboard) mis-draws when its columns are yanked around mid-frame. The
+  // height change itself is applied now (so the layout shrinks), but the
+  // terminal/tmux resize is coalesced to land once the target height settles.
+  clearTimeout(vvpending);
+  vvpending = setTimeout(refitAll, 140);
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", applyVisualViewport);
+  window.addEventListener("orientationchange", applyVisualViewport);
+  applyVisualViewport(); // size #app to the visible viewport now (iOS 100vh bug)
+}
 
 // The first pane exists from the start; the split button adds the second.
 setFocus(createPane());
@@ -1647,7 +1732,7 @@ function paneAttach(p, target) {
 // The sidebar, the new-session form, and the command palette all attach into
 // whichever pane is currently focused.
 function attach(target) {
-  showAttached();
+  showAttached(); // also lowers any raised file sheet on a phone
   if (typeof setRailOpen === "function") setRailOpen(false); // phone: picking a session closes the drawer
   paneAttach(focused || panes[0], target);
 }
@@ -2512,7 +2597,8 @@ const vsplit = document.getElementById("vsplit");
 let splitting = false, splitStartY = 0, splitStartH = 0;
 
 function setFilesHeight(h) {
-  const maxH = Math.max(80, filesBox.parentElement.clientHeight - 220); // leave terminal room
+  if (isPhone()) return; // a phone keeps the browser as a fixed overlay; the list fills the sheet
+  const maxH = Math.max(80, document.querySelector(".main").clientHeight - 220); // leave terminal room
   filesBox.style.height = Math.max(80, Math.min(h, maxH)) + "px";
   fitAll();
 }
@@ -2555,15 +2641,31 @@ let filesCollapsed = (() => {
 })();
 function setFilesCollapsed(c) {
   filesCollapsed = c;
-  filesBox.hidden = c;
-  vsplit.hidden = c; // nothing to resize while the list is hidden
-  document.querySelector(".main").classList.toggle("files-collapsed", c);
   const btn = document.getElementById("files-toggle");
+  if (isPhone()) {
+    // On a phone the file browser is a bottom sheet, not a split. The desktop
+    // collapse flag still persists (so a wider window keeps the preference),
+    // but it must never strip the sheet's contents: `hidden` is cleared here
+    // so a stale desktop-collapse flag can't leave the sheet with a bare
+    // header (the sheet overlays the terminal from `.main`).
+    document.body.classList.toggle("phone-files-open", !c);
+    filesBox.hidden = false;  // the sheet owns .files; keep the list mounted
+    vsplit.hidden = true;     // no drag bar on a phone
+    const mnav = document.querySelector('#mobile-nav [data-m="files"]');
+    if (mnav) mnav.classList.toggle("on", !c);
+  } else {
+    filesBox.hidden = c;
+    vsplit.hidden = c; // nothing to resize while the list is hidden
+    document.querySelector(".main").classList.toggle("files-collapsed", c);
+  }
   btn.textContent = c ? "▴" : "▾";
   btn.title = c ? "Show the file browser" : "Collapse the file browser";
   try { localStorage.setItem(FILES_COLLAPSED_KEY, c ? "1" : "0"); } catch { /* ignore */ }
   refitAll(); // the terminal area just grew/shrank
 }
+// On a phone, the sheet's chevron is the in-header way to tuck the browser back
+// under the terminal; on desktop it collapses the split (same toggle, both read
+// `filesCollapsed`, which is false while the browser is fully visible).
 document.getElementById("files-toggle").addEventListener("click", () => setFilesCollapsed(!filesCollapsed));
 setFilesCollapsed(filesCollapsed); // apply the persisted state at load
 
@@ -3276,6 +3378,7 @@ setMouse.addEventListener("change", () => {
 // a phone, so a key bar sends the sequences straight down the pane's socket.
 const KEY_SEQ = {
   esc: "\x1b", tab: "\t", shifttab: "\x1b[Z", ctrlc: "\x03",
+  pageup: "\x1b[5~", pagedown: "\x1b[6~",
   up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", right: "\x1b[C",
   pipe: "|", tilde: "~", slash: "/", dash: "-",
 };
@@ -3300,13 +3403,22 @@ function setRailOpen(on) {
 document.getElementById("rail-toggle").addEventListener("click", () => setRailOpen(!railEl.classList.contains("open")));
 railScrim.addEventListener("click", () => setRailOpen(false));
 
+// Phone: the file browser is a bottom sheet toggled from the nav. Reuse the
+// persisted desktop collapse flag as the sheet's open state (open == expanded
+// == filesCollapsed false) so the two surfaces never disagree.
+function phoneFilesOpen() { return isPhone() && !filesCollapsed; }
+function setPhoneFilesOpen(open) { setFilesCollapsed(!open); }
+
 document.getElementById("mobile-nav").addEventListener("click", (e) => {
   const b = e.target.closest("[data-m]");
   if (!b) return;
   setRailOpen(false);
+  // Any non-Files nav action takes the file sheet down: Board/Jump/New are
+  // reachable from the nav precisely because the sheet doesn't cover it.
+  if (b.dataset.m !== "files") setPhoneFilesOpen(false);
   if (b.dataset.m === "board") showBoard();
   if (b.dataset.m === "jump") openPalette();
-  if (b.dataset.m === "files") { showAttached(); setFilesCollapsed(!filesCollapsed); }
+  if (b.dataset.m === "files") { showAttached(); setPhoneFilesOpen(!phoneFilesOpen()); }
   if (b.dataset.m === "new") openNewSession();
 });
 
