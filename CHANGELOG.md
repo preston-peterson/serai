@@ -9,6 +9,42 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.27.0]
+
+### Added
+
+- **Phone attach as a first-class layout.** The attached view is no longer a
+  squeezed desktop: a real **PWA** (manifest, `theme-color`, `apple-` /
+  `mobile-web-app-capable` meta, `viewport-fit=cover` with safe-area insets, and
+  raster icons at 180/192/512 derived from the favicon) so Add to Home Screen
+  opens serai standalone and reuses the login cookie — no service worker, since
+  the PTY is live and must never be cached. The manifest and its icons are
+  served over `/static` and test-covered.
+
+### Changed
+
+- **The file browser is a bottom sheet on a phone, not a permanent split.**
+  Below 820px it defaults collapsed; the nav **Files** button raises a sheet
+  that overlays the terminal, and Board/Jump/New in the nav always lower it, so
+  it can never trap a file. It reuses the persisted desktop collapse flag as the
+  sheet's open state so the two surfaces never disagree, and a stale
+  desktop-collapse flag can't strip the sheet's contents.
+- **The soft keyboard no longer covers the pane.** A `visualViewport` listener
+  pins `#app` to the visible viewport and refits each pane, so the cursor stays
+  above the keys (and the iOS 100vh bug is fixed); the resize is coalesced so a
+  full-screen alt-screen TUI isn't resized mid-draw. `keepFocus` stops the refit
+  from blurring the pane.
+- **Alt-screen agent scroll now works via PageUp/PageDown.** Those sequences
+  (`\x1b[5~` / `\x1b[6~`) are sent over the pane's socket, byte-identical to a
+  real keyboard so tmux's mouse-capture can't intercept them — the wheel couldn't
+  scroll charm/bubbletea TUIs. The wheel remains the fallback when the socket is
+  down; on-screen Page-up/Page-down keys were added to the key bar, which now
+  wraps instead of hidden-scrolling.
+- **`paneFit` clamps a desktop column setting to what the pane can show**, so a
+  120-col setting on a 390px pane no longer draws wrapped/overlapped TUIs.
+- **Phone text inputs are forced ≥16px** (by flag, since `.form-row input` wins
+  on specificity) so Safari/Chrome never auto-zoom the whole layout on focus.
+
 ## [2.26.0]
 
 ### Added
