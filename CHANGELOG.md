@@ -9,6 +9,8 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.29.0]
+
 ### Added
 
 - **Exiting a coding agent drops you to the prompt instead of closing the
