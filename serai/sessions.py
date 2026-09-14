@@ -284,6 +284,16 @@ def _preview(lines: list[str], n: int = 12, width: int = 120) -> str:
 # busy. Compared lowercased; tmux may prefix a login shell with "-".
 _SHELL_CMDS = {"bash", "-bash", "zsh", "-zsh", "fish", "-fish", "sh", "-sh",
                "dash", "ksh", "tcsh", "csh", "login", "tmux"}
+
+# What tmux runs after an agent's own command exits. Exiting a harness
+# (claude /exit, quitting opencode/hermes) used to end the pane's only process,
+# which killed the whole session -- so you had to recreate it by hand. With this
+# the pane falls back to an interactive shell prompt instead: re-run the
+# harness, use the session as a plain shell, or ✕ it to end it deliberately.
+# `${SHELL}` expands in the pane shell (tmux runs the command via
+# `default-shell -c`), with a /bin/sh fallback; the literal is the same idiom
+# the start-dir shell case below already uses.
+_EXIT_SHELL = "; exec ${SHELL:-/bin/sh}"
 # A shell is "working" if it saw activity within _WORKING_WINDOW seconds; an
 # agent session sitting at its prompt shows "done" until it's been quiet for
 # _DONE_WINDOW seconds, then decays to idle. Override with the env vars.
@@ -375,11 +385,14 @@ def _loop_gate(kind: str, marker_text: str, content: list[str]) -> bool:
 _loop_memory: dict[str, tuple[str, int]] = {}
 
 
-def _stuck_polls(kind: str, key: str, content: list[str], marker_text: str) -> bool:
+def _stuck_polls(kind: str, key: str, content: list[str], marker_text: str,
+                 parked_shell: bool = False) -> bool:
     """True once the agent's fingerprint has been unchanged for _STUCK_POLLS
     consecutive listings. A changed tail resets the count; a genuinely parked
-    prompt (loop gate closed) never starts the run."""
-    if kind not in AGENT_KINDS or not _loop_gate(kind, marker_text, content):
+    prompt (loop gate closed) never starts the run. `parked_shell` means the
+    pane's foreground is a plain shell -- an agent that exited to its prompt (see
+    _EXIT_SHELL) is parked, not looping, so it resets rather than accumulates."""
+    if kind not in AGENT_KINDS or parked_shell or not _loop_gate(kind, marker_text, content):
         _loop_memory.pop(key, None)
         return False
     fp = "\n".join(content)
@@ -480,10 +493,16 @@ def _list_sessions_uncached(host: str) -> list[Session]:
             secs = None
         # Stuck detection reuses this same capture. Signal 1 is pure (a repeated
         # line in the visible tail); signal 2 needs the poll memory keyed by id.
+        # An agent that exited to a shell prompt (_EXIT_SHELL) parks with a shell
+        # in the foreground: none of the signals apply to it -- it is parked, not
+        # looping, and the fixed prompt would otherwise read as signal 2.
+        parked_shell = command.lower() in _SHELL_CMDS
         content = _content_lines(lines)
-        dupe_lines = kind in AGENT_KINDS and _trailing_dupes(content) >= _STUCK_DUPES
-        stuck_polls = _stuck_polls(kind, f"{host}::{name}", content, marker_text)
-        planned_leftover = kind in AGENT_KINDS and bool(content) and \
+        dupe_lines = kind in AGENT_KINDS and not parked_shell and \
+            _trailing_dupes(content) >= _STUCK_DUPES
+        stuck_polls = _stuck_polls(kind, f"{host}::{name}", content, marker_text,
+                                   parked_shell)
+        planned_leftover = kind in AGENT_KINDS and not parked_shell and bool(content) and \
             _planned_leftover(content[-1])
         state = _state_for(kind, attached, secs, command, marker_text,
                            dupe_lines, stuck_polls, planned_leftover)
@@ -593,7 +612,9 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     Agent sessions launch their own command (`claude` / `grok` / `opencode` / `hermes`) in
     the given project directory; shells just start an interactive tmux. Everything
     runs under a local PTY (see main.py), and remote sessions wrap the same tmux
-    command in ssh -t.
+    command in ssh -t. An agent command ends with `; exec ${SHELL:-/bin/sh}`, so
+    exiting the harness drops the pane back to a shell prompt instead of killing
+    the session (see _EXIT_SHELL).
 
     `tags` is a pre-cleaned, comma-joined tag list (see `clean_tags`) applied only
     on create -- like `owner`, it rides in the same `new -A` command so nothing ever
@@ -637,6 +658,10 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     # has no command of ours to pass them to.
     if run and args:
         run = f"{run} {args}"
+    if run:
+        # Exiting the harness drops the pane to a shell prompt instead of ending
+        # the session (see _EXIT_SHELL). A constant tail, no interpolation.
+        run = f"{run}{_EXIT_SHELL}"
     if path:
         # Both kinds honour a start directory. `cd` runs in the shell tmux spawns,
         # so _quote_path's expandable ~ works and no tilde reaches tmux itself;
@@ -685,8 +710,12 @@ def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = 
     spec = _AGENTS.get(kind)
     if spec:
         # args arrives already shlex-quoted from clean_args (invariant #3), and
-        # suppresses our resume flag when it carries one of its own
-        cmd.append(spec["cmd"] + resume_flag(kind, resume, args) + (f" {args}" if args else ""))
+        # suppresses our resume flag when it carries one of its own. Same
+        # drop-to-prompt tail as attach_argv: an agent that finishes (or dies on
+        # start, e.g. a bad resume flag) leaves a live session at a shell prompt
+        # rather than vanishing from the board.
+        cmd.append(spec["cmd"] + resume_flag(kind, resume, args)
+                   + (f" {args}" if args else "") + _EXIT_SHELL)
     if host == "local":
         return cmd
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in cmd)]

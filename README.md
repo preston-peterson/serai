@@ -48,6 +48,12 @@ drawer underneath.
   code path — remote just wraps the tmux command in `ssh -t`. A dropped socket
   reattaches to the same session automatically, because tmux kept it alive. Open
   several as tabs, or split up to six panes.
+- **Exiting a coding agent drops you to the prompt, it doesn't close the
+  session.** `/exit` (or quitting opencode / Grok / Hermes) leaves the session
+  alive sitting at a shell prompt, so you can relaunch the harness, use the
+  session as a plain shell, or walk away — the session stays on the board as
+  *done* instead of vanishing and needing a manual recreate. ✕ is still the
+  deliberate end.
 - **Files** browses any host — local filesystem or SFTP — with cut/copy/paste,
   rename, delete, new folder, multi-select, and drag-and-drop upload. Copying
   between two hosts relays as a streamed tar, so a multi-GB tree moves at a fixed

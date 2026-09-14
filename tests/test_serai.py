@@ -412,16 +412,23 @@ def test_wait_markers_configurable_via_env(monkeypatch):
     assert set(sessions._SHELL_MARKERS).issubset(set(markers["shell"]))
 
 
+def _inner(command):
+    # every agent command serai builds ends with the drop-to-prompt tail; strip
+    # it (asserting it's there) so callers can assert on the harness command
+    assert command.endswith(sessions._EXIT_SHELL), command
+    return command[:-len(sessions._EXIT_SHELL)]
+
+
 def _claude_inner(path, resume=""):
     # the shell-command tmux runs is the element just before the ';' separator
     argv = sessions.attach_argv("local", "cc-x", "claude", path, resume)
-    return argv[:argv.index(";")][-1]
+    return _inner(argv[:argv.index(";")][-1])
 
 
 def _agent_inner(kind, name, path, resume="", args=""):
     # the shell-command tmux runs for an agent session of the given kind
     argv = sessions.attach_argv("local", name, kind, path, resume, args=args)
-    return argv[:argv.index(";")][-1]
+    return _inner(argv[:argv.index(";")][-1])
 
 
 def test_attach_argv_local_and_remote():
@@ -501,6 +508,54 @@ def test_attach_argv_agent_resume_suppressed_by_args():
     assert _agent_inner("opencode", "oc-web", "~/git/web", "continue", "--session abc") == "cd ~/git/web && opencode --session abc"
     assert _agent_inner("opencode", "oc-web", "~/git/web", "resume", "--continue") == "cd ~/git/web && opencode --continue"
     assert _agent_inner("hermes", "hm-app", "~/git/app", "resume", "--continue") == "cd ~/git/app && hermes --continue"
+
+
+def test_agent_exit_drops_to_prompt_not_into_a_dead_session():
+    # Exiting the harness must fall back to an interactive shell prompt instead
+    # of ending the pane's only process (which used to kill the session and
+    # force a manual recreate). The tail is a fixed literal -- the pane shell
+    # expands ${SHELL} itself (invariant #3: nothing hostile is interpolated).
+    tail = sessions._EXIT_SHELL
+    assert tail == "; exec ${SHELL:-/bin/sh}"
+    # every agent kind, with and without a start dir, ends in the prompt shell
+    av = sessions.attach_argv("local", "oc-web", "opencode")
+    assert av[av.index("new") + 4] == "opencode" + tail
+    av = sessions.attach_argv("local", "cc-x", "claude", "~/git/app", "resume", args="--chrome")
+    assert av[av.index("new") + 4] == "cd ~/git/app && claude --resume --chrome" + tail
+    # one tail only -- a start dir must not stack a second exec
+    assert av[av.index("new") + 4].count("${SHELL") == 1
+    # shells are untouched: a bare new for the no-dir case (tmux's own login
+    # shell), and the pre-existing single exec for the start-dir case
+    bare = sessions.attach_argv("local", "shell-main", "shell")
+    assert "new" in bare and "-A" in bare
+    assert bare[bare.index("new") + 4] == ";"          # no command element
+    sh = sessions.attach_argv("local", "shell-x", "shell", "~/git/app")
+    assert sh[sh.index("new") + 4] == "cd ~/git/app && exec ${SHELL:-/bin/sh}"
+    # remote: the whole command is one ssh-side element, single-quoted intact
+    rem = sessions.attach_argv("web1", "hm-app", "hermes", "/srv/app")[-1]
+    assert "'hermes; exec ${SHELL:-/bin/sh}'" in rem or \
+        "'cd /srv/app && hermes; exec ${SHELL:-/bin/sh}'" in rem
+
+
+def test_agent_that_exited_to_prompt_is_parked_not_stuck(monkeypatch):
+    # The drop-to-prompt means an agent-kind session can sit at a plain shell
+    # prompt with a fixed tail. Signal 2 (unchanged fingerprint across polls)
+    # must not read that as a loop: a shell in the foreground is parked.
+    now = int(time.time())
+    listing = f"oc-example-1::0::{now - 60}::::bash::0::::::::/home/u/app\n"
+    pane = "exit\nsome finished output\ndemo@host-a:~/app$ \n"
+
+    def fake_run(argv, timeout=6):
+        if "list-sessions" in argv:
+            return listing
+        if "capture-pane" in argv:
+            return pane
+        return ""
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    sessions._loop_memory.clear()
+    states = [sessions._list_sessions_uncached("local")[0].state for _ in range(4)]
+    assert "stuck" not in states                     # never looping
+    assert states[-1] == "done"                      # finished, unread -- as intended
 
 
 def test_settings_save_load_roundtrip(monkeypatch, tmp_path):
@@ -1068,7 +1123,7 @@ def test_attach_argv_start_dir_applies_to_both_kinds():
     sh = sessions.attach_argv("local", "shell-x", "shell", "~/git/proj")
     assert "cd ~/git/proj && exec ${SHELL:-/bin/sh}" in sh   # ~ stays shell-expandable
     cc = sessions.attach_argv("local", "cc-x", "claude", "~/git/proj", "continue")
-    assert "cd ~/git/proj && claude --continue" in cc
+    assert "cd ~/git/proj && claude --continue" + sessions._EXIT_SHELL in cc
     # no path -> plain session, unchanged
     assert not any("cd " in a for a in sessions.attach_argv("local", "shell-y", "shell"))
     # a path with a space survives being quoted twice for the remote shell: the
@@ -1609,12 +1664,14 @@ def test_tls_byo_missing_or_half_set_raises(tmp_path, monkeypatch):
 
 def test_restore_argv_local_and_remote():
     cl = sessions.restore_argv("local", "cc-x", "claude", "/home/u/app")
-    assert cl == ["tmux", "new", "-A", "-d", "-s", "cc-x", "-c", "/home/u/app", "claude --continue"]
+    assert cl == ["tmux", "new", "-A", "-d", "-s", "cc-x", "-c", "/home/u/app",
+                  "claude --continue" + sessions._EXIT_SHELL]
     sh = sessions.restore_argv("local", "shell-y", "shell", "/home/u")
     assert sh == ["tmux", "new", "-A", "-d", "-s", "shell-y", "-c", "/home/u"]  # no command -> a shell
     rem = sessions.restore_argv("web1", "cc-z", "claude", "/srv/app")
     assert rem[0] == "ssh" and rem[-2] == "web1" and "BatchMode=yes" in rem
-    assert rem[-1] == "tmux new -A -d -s cc-z -c /srv/app 'claude --continue'"
+    assert rem[-1] == ("tmux new -A -d -s cc-z -c /srv/app"
+                       " 'claude --continue; exec ${SHELL:-/bin/sh}'")
 
 
 def test_restore_argv_path_stays_a_single_argv_element():
@@ -1660,7 +1717,8 @@ def test_api_sessions_saved_and_restore(tmp_path, monkeypatch):
     r = c.post("/api/sessions/restore").json()
     assert r["restored"] == 2 and r["skipped"] == 0
     # claude recreated detached w/ --continue in its dir; shell recreated; tags reapplied
-    assert ["tmux", "new", "-A", "-d", "-s", "cc-proj", "-c", "/home/u/proj", "claude --continue"] in calls
+    assert ["tmux", "new", "-A", "-d", "-s", "cc-proj", "-c", "/home/u/proj",
+            "claude --continue" + sessions._EXIT_SHELL] in calls
     assert ["tmux", "new", "-A", "-d", "-s", "shell-x", "-c", "/home/u"] in calls
     assert ["tmux", "set-option", "-t", "cc-proj", "@serai_tags", "prod"] in calls
 
@@ -1704,7 +1762,8 @@ def test_api_restore_honours_per_session_resume(tmp_path, monkeypatch):
         {"host": "local", "name": "cc-c", "resume": ""},          # fresh
         {"host": "local", "name": "cc-d", "resume": "; rm -rf /"},  # nonsense -> continue
     ]})
-    launched = {a[a.index("-s") + 1]: a[-1] for a in calls if "-s" in a}
+    launched = {a[a.index("-s") + 1]: a[-1].removesuffix(sessions._EXIT_SHELL)
+                for a in calls if "-s" in a}
     assert launched["cc-a"] == "claude --continue"
     assert launched["cc-b"] == "claude --resume"
     assert launched["cc-c"] == "claude"                 # fresh conversation
@@ -2475,11 +2534,13 @@ def test_claude_session_runs_claude_even_without_a_start_dir():
     directory, which then got snapshotted as that session's dir and poisoned
     every later restore. `claude` must run either way."""
     argv = sessions.attach_argv("local", "cc-x", "claude")
-    assert "claude" in argv, f"claude session must still launch claude: {argv}"
+    assert ("claude" + sessions._EXIT_SHELL) in argv, \
+        f"claude session must still launch claude: {argv}"
     withdir = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj")
-    assert "cd /tmp/proj && claude" in withdir
+    assert "cd /tmp/proj && claude" + sessions._EXIT_SHELL in withdir
     # resume flags keep working in both shapes
-    assert "claude --resume" in sessions.attach_argv("local", "cc-x", "claude", resume="resume")
+    assert "claude --resume" + sessions._EXIT_SHELL in \
+        sessions.attach_argv("local", "cc-x", "claude", resume="resume")
 
 
 def test_shell_session_with_no_start_dir_is_unchanged():
@@ -2568,10 +2629,11 @@ def test_clean_args_is_idempotent_and_rejects_the_unparseable():
 def test_extra_args_reach_claude_in_both_builders():
     argv = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj",
                                 resume="resume", args="--chrome")
-    assert "cd /tmp/proj && claude --resume --chrome" in argv
-    assert "claude --chrome" in sessions.attach_argv("local", "cc-x", "claude", args="--chrome")
+    assert "cd /tmp/proj && claude --resume --chrome" + sessions._EXIT_SHELL in argv
+    assert "claude --chrome" + sessions._EXIT_SHELL in \
+        sessions.attach_argv("local", "cc-x", "claude", args="--chrome")
     restore = sessions.restore_argv("local", "cc-x", "claude", "/tmp/proj", "resume", "--chrome")
-    assert "claude --resume --chrome" in restore
+    assert "claude --resume --chrome" + sessions._EXIT_SHELL in restore
     # a shell has no command of ours to carry them, so they're ignored there
     assert not any("--chrome" in a for a in
                    sessions.attach_argv("local", "shell-x", "shell", args="--chrome"))

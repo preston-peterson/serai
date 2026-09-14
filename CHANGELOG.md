@@ -9,6 +9,18 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+### Added
+
+- **Exiting a coding agent drops you to the prompt instead of closing the
+  session.** `/exit` (or quitting opencode / Grok / Hermes) used to end the
+  pane's only process, which killed the session outright — you had to recreate
+  it by hand. The agent command now ends with `exec $SHELL`, so the session
+  stays alive at a shell prompt: relaunch the harness, use the session as a
+  plain shell, or walk away — it stays on the board as *done*. ✕ is still the
+  deliberate end. Sessions parked at that prompt are recognised as parked, so
+  they never read as *stuck*. Existing sessions keep the old behavior until
+  they are restarted or recreated (tmux only runs the command at create).
+
 ## [2.28.0]
 
 ### Added
