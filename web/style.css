@@ -523,8 +523,8 @@ body {
   .mnav .g { font-size: 1.05rem; line-height: 1; }
   .mnav.on { color: var(--accent); }
 
-  /* touch has no hover, so row actions can't hide behind it */
-  .rail .row .row-split, .rail .row .row-edit, .rail .row .row-del { visibility: visible; }
+  /* touch has no hover, so row actions can't hide behind it -- the
+     (hover: none) block by the rail row-action rules makes ⋮/✕ visible */
   .rail .row:hover .rw { display: inline; }
   .rail .row { padding: .5rem .5rem; height: 31px; }   /* finger-sized */
   /* the group header already names the tag -- drop the per-row copy so the
@@ -660,13 +660,20 @@ body {
 .rail .row:hover .rw { display: none; } /* make room for the row actions on hover */
 /* The row actions are visibility:hidden by default, which still reserves their
    width -- enough to overflow a 230px rail and shrink the name to nothing. Take
-   them out of the flow until hover so the session name actually has room. */
-.rail .row .row-split, .rail .row .row-edit,
-.rail .row .row-restart, .rail .row .row-del { display: none; }
-.rail .row:hover .row-split,
-.rail .row:hover .row-edit,
-.rail .row:hover .row-restart,
+   them out of the flow until hover so the session name actually has room.
+   (item 22: one ⋮ + the inline ✕ replaced five icon buttons, which sat right
+   where people were aiming when picking a row.) */
+.rail .row .row-more, .rail .row .row-del { display: none; }
+.rail .row:hover .row-more,
 .rail .row:hover .row-del { display: inline-block; visibility: visible; }
+/* Touch has no hover, so ⋮/✕ must be always there. Placed after the base rules
+   on purpose: same specificity, later wins. The old mobile override sat earlier
+   in the file and only set `visibility`, so `display: none` silently won and
+   the buttons never actually showed on a phone. */
+@media (hover: none) {
+  .rail .row .row-more, .rail .row .row-del { display: inline-block; visibility: visible; }
+  .rail .row .rw { display: none; }  /* the permanent version of the hover swap */
+}
 
 /* --- pane tabs above the terminal (mockup .ptabs/.ptab) -------------------- */
 .ptabs {
@@ -1012,53 +1019,43 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .bcast-clear:hover { color: var(--accent); }
 .rowcheck { margin: 0 1px 0 0; flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }
 
-/* session rename + tags */
-.row-edit {
-  flex-shrink: 0; margin-left: 4px; padding: 0 4px;
-  background: transparent; border: none; color: var(--faint);
-  font-size: 12px; cursor: pointer; visibility: hidden;
-}
+/* session rows: kill stays inline; everything else lives behind the ⋮ */
 .row-del {
   flex-shrink: 0; padding: 0 4px;
   background: transparent; border: none; color: var(--faint);
   font-size: 11px; cursor: pointer; visibility: hidden;
 }
-/* restart = kill and recreate; the only way a changed start dir or set of args
-   reaches a session that is already running (tmux `new -A` runs its command on
-   create only). Sits between edit and kill: consequential, but it comes back. */
-.row-restart {
+.row-more {
   flex-shrink: 0; padding: 0 4px;
   background: transparent; border: none; color: var(--faint);
-  font-size: 11px; cursor: pointer; visibility: hidden;
+  font-size: 13px; line-height: 1; cursor: pointer; visibility: hidden;
 }
-.row-restart:hover { color: var(--accent); }
+.row.session:hover .row-more, .row.session:hover .row-del { visibility: visible; }
+.row-more:hover { color: var(--accent); }
+.row-del:hover { color: #e24b4a; }
+/* the row overflow menu (item 22). One popover per row; LABELLED rows, since
+   the whole complaint was icon-precision — bare glyphs in a menu re-create it.
+   Fixed-position (anchored by JS) so it escapes the rail's scroll container. */
+.row-menu {
+  position: fixed; z-index: 90; min-width: 178px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .55);
+  padding: .25rem; font-family: var(--mono);
+}
+.row-menu-item {
+  display: flex; gap: .4rem; align-items: center;
+  padding: .4rem .55rem; border-radius: 6px; cursor: pointer;
+  font-size: .76rem; color: var(--text-dim); white-space: nowrap;
+}
+.row-menu-item:hover { background: var(--raised); color: var(--text); }
+/* a favorite's star on a rail row is a state MARK (item 22: marking is not an
+   action), so unlike the row buttons it is always visible and takes no click */
+.row .favmark { flex: none; color: var(--st-blocked); font-size: .7rem; line-height: 1; }
 /* one-line note under a form row (why a field doesn't apply until a restart) */
 .form-hint { font-size: .72rem; color: var(--text-faint); margin: -.2rem 0 .7rem; }
 .form-hint code { font-family: var(--mono); font-size: .95em; }
-.row-split {
-  flex-shrink: 0; padding: 0 4px;
-  background: transparent; border: none; color: var(--faint);
-  font-size: 11px; cursor: pointer; visibility: hidden;
-}
-.row.session:hover .row-split, .row.session:hover .row-edit, .row.session:hover .row-del { visibility: visible; }
-.row-split:hover { color: var(--accent); }
-.row-edit:hover { color: var(--accent); }
-.row-del:hover { color: #e24b4a; }
-
-/* favorites -- the star toggle. The star is filled when the saved profile is a
-   favorite; it is store-side (no tmux option), so it is driven by the profile,
-   not the live session. Shown on row hover like the other row actions. */
-.row-fav {
-  flex-shrink: 0; padding: 0 4px;
-  background: transparent; border: none; color: var(--faint);
-  font-size: 12px; cursor: pointer; visibility: hidden;
-}
-.row-fav.on { color: var(--st-blocked); }
-.row-fav:hover { color: var(--st-blocked); }
-.row.session:hover .row-fav { visibility: visible; }
-.rail .row .row-fav { display: none; }
-.rail .row:hover .row-fav { display: inline-block; visibility: visible; }
-/* board card star: sits in the card header, right of the name/host */
+/* board card star: sits in the card header, right of the name/host.
+   The toggle — clicking a star to favorite/unfavorite stays (item 21). */
 .bcard .star {
   margin-left: auto; flex-shrink: 0; padding: 0 3px;
   background: transparent; border: none; color: var(--text-faint);
@@ -1073,6 +1070,14 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .favmenu .favact { margin-left: auto; color: var(--accent); font-size: .7rem; flex: none; }
 .favmenu .favrow.live { opacity: .92; }
 .favmenu .favrow.live .favact { color: var(--st-working); }
+/* the deliberate end of a launcher (item 23) — quiet until you look for it */
+.favmenu .favforget {
+  flex: none; margin-left: .4rem; padding: 0 3px;
+  background: transparent; border: none; color: var(--text-faint);
+  font-size: .72rem; line-height: 1; cursor: pointer; visibility: hidden;
+}
+.favmenu .favrow:hover .favforget { visibility: visible; }
+.favmenu .favforget:hover { color: #e24b4a; }
 .favmenu .favmenu-h { display: flex; align-items: baseline; justify-content: space-between; padding: .1rem .5rem .4rem; }
 .favmenu .favmenu-h b { font: 600 .82rem var(--sans); color: var(--text); }
 .favmenu .favmenu-h .sub { font: 11px var(--mono); color: var(--text-faint); }

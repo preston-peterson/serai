@@ -1278,11 +1278,12 @@ def test_kill_argv_local_and_remote():
     assert r[0] == "ssh" and r[-1] == "tmux kill-session -t shell-a"
 
 
-def test_kill_endpoint(monkeypatch):
+def test_kill_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))  # keep store.remove out of the real config
     cap = {}
     monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: (cap.__setitem__("argv", argv), True)[1])
     r = TestClient(app).post("/api/kill", json={"host": "local", "name": "shell-x"})
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "kept": False}  # no profile -> nothing kept (item 23)
     assert cap["argv"] == ["tmux", "kill-session", "-t", "shell-x"]
 
 
@@ -2997,6 +2998,32 @@ def test_kill_refuses_someone_elses_saved_profile(auth_on, monkeypatch):
     admin.post("/api/login", json={"username": "alice", "password": "longenough"})
     assert admin.post("/api/kill", json={"host": "local", "name": "cc-x"}).status_code == 200
     assert store.get("local", "cc-x") is None
+
+
+def test_kill_keeps_a_favorited_profile(tmp_path, monkeypatch):
+    """Item 23: a favorite is a *launcher* (the profile), not the instance. ✕
+    ends the tmux session, but the profile and its star stay -- the Favorites
+    menu keeps the row, one click launches a fresh instance. The forget (item
+    10) survives as the deliberate path: unfavorite first, and the kill drops
+    the profile as it always did."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: True)
+    monkeypatch.setattr(sessions, "session_exists", lambda h, n: True)
+    monkeypatch.setattr(sessions, "get_owner", lambda h, n: "")
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/p", "tags": []}])
+    store.set_favorite("local", "cc-x", True)
+    client = TestClient(app)
+    r = client.post("/api/kill", json={"host": "local", "name": "cc-x"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "kept": True}
+    assert store.get("local", "cc-x") is not None, "the launcher survives its instance"
+    assert store.get("local", "cc-x")["favorite"] is True
+    store.set_favorite("local", "cc-x", False)          # the deliberate unfavorite
+    r = client.post("/api/kill", json={"host": "local", "name": "cc-x"})
+    assert r.json()["kept"] is False
+    assert store.saved() == [], "unfavorite + kill is the explicit forget"
 
 
 def test_clean_dir_refuses_serais_own_directory():

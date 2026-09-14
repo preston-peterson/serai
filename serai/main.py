@@ -760,7 +760,16 @@ async def api_rename(request: Request) -> JSONResponse:
 
 @app.post("/api/kill")
 async def api_kill(request: Request) -> JSONResponse:
-    """Kill a session. Body: {host, name}."""
+    """Kill a session. Body: {host, name}.
+
+    Kills the *instance*. The profile is forgotten too (``store.remove`` -- item
+    10's no-resurrection rule) **unless the profile is a favorite**: the star
+    marks the launcher, not the running session, so closing an instance must
+    not erase what you chose to keep (item 23). Forgetting a favorite stays
+    deliberate -- unfavorite first (or Forget in the Favorites menu), and the
+    next kill drops the profile as usual. ``kept`` tells the client which
+    happened so it can say so honestly.
+    """
     body = await request.json()
     host = body.get("host", "local")
     name = body.get("name") or ""
@@ -769,10 +778,13 @@ async def api_kill(request: Request) -> JSONResponse:
     if not await _may_touch(_session(request), host, name):
         return JSONResponse({"error": "not your session"}, status_code=403)
     loop = asyncio.get_event_loop()
+    rec = await loop.run_in_executor(_pool, store.get, host, name)
+    kept = bool(rec and rec.get("favorite"))
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.kill_argv(host, name))
     sessions.clear_cache(host)
-    await loop.run_in_executor(_pool, store.remove, host, name)  # forget the profile
-    return JSONResponse({"ok": bool(ok)})
+    if not kept:
+        await loop.run_in_executor(_pool, store.remove, host, name)  # forget the profile
+    return JSONResponse({"ok": bool(ok), "kept": kept})
 
 
 @app.post("/api/sessions/restart")

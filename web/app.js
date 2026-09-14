@@ -1202,6 +1202,10 @@ function toggleAllGroups() {
 document.getElementById("tree-toggle")?.addEventListener("click", toggleAllGroups);
 
 function renderTree() {
+  // A poll re-render would otherwise yank the ⋮ menu out from under the cursor
+  // every 5s. Any click outside the menu closes it first, so this only defers
+  // repaint for as long as the menu is genuinely open.
+  if (rowMenuEl) return;
   const tree = document.getElementById("tree");
   const groups = groupedData();
   tree.innerHTML = "";
@@ -1259,27 +1263,19 @@ function renderTree() {
         ownerChip(s, "rowner") +
         (tagsHtml ? `<span class="tags">${tagsHtml}</span>` : "") +
         `<span class="rw">${escapeHtml(s.state === "running" ? "now" : fmtAge(s.age))}</span>` +
-        starBtn(s, "row-fav") +
-        `<button class="row-split" title="open in a split pane (side by side)">\u25eb</button>` +
-        `<button class="row-edit" title="rename / tag">\u270e</button>` +
-        (AGENT_KINDS.includes(s.kind)
-          ? `<button class="row-restart" title="restart (kill and recreate)">\u27f3</button>` : "") +
+        // a favorite's star is a *state marker* here (a launcher exists for this
+        // session), not a button -- the toggle lives in the ⋮ menu. Always
+        // visible, unlike the row actions, because marking takes no precision.
+        (s.favorite ? `<span class="favmark" title="favorite \u2014 launches from the favorites menu">\u2605</span>` : "") +
+        `<button class="row-more" title="more actions">\u22ee</button>` +
         `<button class="row-del" title="kill session">\u2715</button>`;
       row.onclick = () => attach({ host: s.host, name: s.name, kind: s.kind, label: s.label, dir: s.dir, path: s.path });
-      row.querySelector(".row-fav").onclick = (ev) => { ev.stopPropagation(); setFavorite(s.host, s.name, !s.favorite); };
-      row.querySelector(".row-split").onclick = (ev) => { ev.stopPropagation(); openInSplit({ host: s.host, name: s.name, kind: s.kind, label: s.label }); };
-      row.querySelector(".row-edit").onclick = (ev) => { ev.stopPropagation(); openEditSession(s); };
-      const restartBtn = row.querySelector(".row-restart");
-      if (restartBtn) restartBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        if (!confirm(`Restart ${s.label}? This kills the running session and runs: ` +
-                      `${KINDS[s.kind].cmd}${s.args ? " " + s.args : ""}\n\n` +
-                      "Anything running in it is lost." +
-                      (/(^|\s)--(resume|continue|session)(\s|$)/.test(s.args || "") ? ""
-                        : "\nAdd --resume to the args if you want the conversation picker."))) return;
-        restartSession(s);
-      };
-      row.querySelector(".row-del").onclick = (ev) => { ev.stopPropagation(); killSession(s); };
+      row.querySelector(".row-more").onclick = (ev) => { ev.stopPropagation(); openRowMenu(ev.currentTarget, s); };
+      const del = row.querySelector(".row-del");
+      del.onclick = (ev) => { ev.stopPropagation(); killSession(s); };
+      del.title = s.favorite
+        ? "kill session (favorite launcher is kept)"
+        : "kill session";
       if (fleetMode) {
         const cb = document.createElement("input");
         cb.type = "checkbox";
@@ -1293,6 +1289,77 @@ function renderTree() {
   }
   renderBoard();     // keep the board in sync wherever the tree re-renders
   renderPaneTabs();  // ...and the pane tabs' state dots
+}
+
+// --- row overflow menu (item 22) --------------------------------------------
+// The rail row IS the select target, and five icon buttons at its right edge
+// were misclicked while aiming for a different row. One ⋮ carries the
+// non-destructive actions as LABELLED rows — reusing the bare glyphs in the
+// menu would re-create the precision problem the whole change is about.
+// ✕ stays inline: burying the forget (item 10) another click deep is its own
+// regression. The menu is a shortcut to the same handlers the edit dialog has,
+// not a second implementation.
+let rowMenuEl = null;
+function closeRowMenu() {
+  if (!rowMenuEl) return;
+  rowMenuEl.remove();
+  rowMenuEl = null;
+  window.removeEventListener("mousedown", rowMenuAway, true);
+  window.removeEventListener("keydown", rowMenuEscape, true);
+  window.removeEventListener("resize", closeRowMenu);
+  window.removeEventListener("scroll", closeRowMenu, true);
+}
+function rowMenuAway(e) { if (rowMenuEl && !rowMenuEl.contains(e.target)) closeRowMenu(); }
+function rowMenuEscape(e) { if (e.key === "Escape") closeRowMenu(); }
+
+// the restart confirm, in one place: shows the exact command line, and only
+// mentions --resume when the args don't already carry a resume flag (item 6).
+function confirmRestart(s) {
+  return confirm(`Restart ${s.label}? This kills the running session and runs: ` +
+                 `${KINDS[s.kind].cmd}${s.args ? " " + s.args : ""}\n\n` +
+                 "Anything running in it is lost." +
+                 (/(^|\s)--(resume|continue|session)(\s|$)/.test(s.args || "") ? ""
+                   : "\nAdd --resume to the args if you want the conversation picker."));
+}
+
+function openRowMenu(btn, s) {
+  const key = `${s.host}::${s.name}`;
+  const wasOpen = rowMenuEl && rowMenuEl._key === key;
+  closeRowMenu();
+  if (wasOpen) return; // the ⋮ toggles
+  const menu = document.createElement("div");
+  menu.className = "row-menu";
+  menu._key = key;
+  const item = (label, fn) => {
+    const r = document.createElement("div");
+    r.className = "row-menu-item";
+    r.textContent = label;
+    r.onclick = (ev) => { ev.stopPropagation(); closeRowMenu(); fn(); };
+    menu.appendChild(r);
+  };
+  item(s.favorite ? "\u2605  remove from favorites" : "\u2606  save to favorites",
+       () => setFavorite(s.host, s.name, !s.favorite));
+  item("\u25eb  open in split",
+       () => openInSplit({ host: s.host, name: s.name, kind: s.kind, label: s.label }));
+  item("\u270e  edit", () => openEditSession(s));
+  if (AGENT_KINDS.includes(s.kind)) {
+    item("\u27f3  restart", () => { if (confirmRestart(s)) restartSession(s); });
+  }
+  document.body.appendChild(menu);
+  // fixed + measured after insert; flip above the row near the window bottom
+  const rc = btn.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.top = (rc.bottom + 4 + mh > window.innerHeight - 8
+    ? Math.max(8, rc.top - mh - 4) : rc.bottom + 4) + "px";
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - mw - 8, rc.right - mw)) + "px";
+  rowMenuEl = menu;
+  // the row click attaches; nothing inside the menu may reach it
+  menu.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  menu.addEventListener("click", (ev) => ev.stopPropagation());
+  window.addEventListener("mousedown", rowMenuAway, true);
+  window.addEventListener("keydown", rowMenuEscape, true);
+  window.addEventListener("resize", closeRowMenu);
+  window.addEventListener("scroll", closeRowMenu, true);
 }
 
 // --- board (the landing view) ----------------------------------------------
@@ -1489,6 +1556,34 @@ function renderFavMenu() {
                  path: r.path, resume: AGENT_KINDS.includes(r.kind) ? "resume" : "", args: r.args || "" });
       }
     };
+    // Forget (item 23): a favorite otherwise outlives everything, so this menu
+    // is where it can be deliberately ended. Unfavourite first, THEN kill --
+    // the server only spares profiles that are still flagged, so the kill's
+    // store.remove does the actual forgetting (one endpoint, one owner gate).
+    const x = document.createElement("button");
+    x.className = "favforget";
+    x.type = "button";
+    x.title = "forget this favorite";
+    x.textContent = "\u2715";
+    x.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Forget "${r.label || r.name}"${live ? " and end its running session" : ""}? ` +
+                   "The saved launcher and its star go away.")) return;
+      document.getElementById("favorites-menu").hidden = true;
+      try {
+        await fetch("/api/favorite", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ host: r.host, name: r.name, favorite: false }),
+        });
+        await fetch("/api/kill", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ host: r.host, name: r.name }),
+        });
+        toast(`forgot ${escapeHtml(r.label || r.name)}`, "warn", 3000);
+      } catch { toast("forget failed", "error"); }
+      loadSessions();
+    };
+    row.appendChild(x);
     menu.appendChild(row);
   }
 }
@@ -2845,10 +2940,12 @@ function claimFavoriteOnCreate(host, name, tries = 10) {
   if (tries > 0) setTimeout(() => { loadSessions(); claimFavoriteOnCreate(host, name, tries - 1); }, 800);
 }
 
-// Toggle a profile's favorite flag. Optimistically flips the on-screen star,
-// then confirms with the server (the reload reconciles either way).
+// Toggle a profile's favorite flag. Optimistically flips the on-screen star
+// (live list and saved profiles), then confirms with the server (the reload
+// reconciles either way).
 async function setFavorite(host, name, fav) {
   for (const s of sessionList) if (s.host === host && s.name === name) s.favorite = fav;
+  for (const r of savedSessions) if (r.host === host && r.name === name) r.favorite = fav;
   try {
     const r = await (await fetch("/api/favorite", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2856,7 +2953,7 @@ async function setFavorite(host, name, fav) {
     })).json();
     if (r && r.error) toast(escapeHtml(r.error), "error", 4000);
   } catch { /* the next poll reconciles */ }
-  renderBoard(); renderFavMenu();
+  renderTree(); renderBoard(); renderFavMenu();
 }
 
 document.getElementById("new-session").addEventListener("click", () => {
@@ -3501,20 +3598,32 @@ function renderPaletteRow(item, i) {
   return row;
 }
 
-// ✕ on a live session kills tmux and forgets the profile. ✕ on a saved-not-live
-// row only forgets — same endpoint, because /api/kill always store.remove()s.
+// ✕ on a live session ends its tmux instance; on a saved-not-live row it
+// forgets the profile (item 10). The exception is a favorite (item 23): the
+// star marks the *launcher*, so killing the instance keeps the profile -- the
+// server says so with `kept`, and the row visibly lands in the saved state
+// (Favorites menu "restore", palette "saved"). Forgetting a favorite is the
+// deliberate path: unfavorite it first, or Forget in the Favorites menu.
 async function killSession(s) {
   const live = sessionList.some((x) => x.host === s.host && x.name === s.name);
+  if (!live && s.favorite) {
+    toast(`"${escapeHtml(s.label)}" is a favorite \u2014 remove it from favorites first; \u2715 won't forget a launcher.`,
+          "warn", 5000);
+    return false;
+  }
   const msg = live
-    ? `Kill session "${s.label}" on ${s.host}? This ends its tmux session and it won't be offered to resume.`
+    ? s.favorite
+      ? `Kill the running session "${s.label}" on ${s.host}? It is a favorite, so its launcher stays \u2014 start it again from Favorites.`
+      : `Kill session "${s.label}" on ${s.host}? This ends its tmux session and it won't be offered to resume.`
     : `Forget saved session "${s.label}" on ${s.host}? It won't be offered to resume.`;
   if (!confirm(msg)) return false;
   try {
-    await fetch("/api/kill", {
+    const r = await (await fetch("/api/kill", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ host: s.host, name: s.name }),
-    });
-    toast(live ? `killed ${escapeHtml(s.label)}` : `forgot ${escapeHtml(s.label)}`, "warn", 3000);
+    })).json();
+    if (r && r.kept) toast(`killed ${escapeHtml(s.label)} \u2014 favorite kept`, "warn", 3000);
+    else toast(live ? `killed ${escapeHtml(s.label)}` : `forgot ${escapeHtml(s.label)}`, "warn", 3000);
   } catch { toast(live ? "kill failed" : "forget failed", "error"); }
   await loadSessions();
   return true;
@@ -3534,7 +3643,7 @@ function refreshPalette() {
   }
   for (const r of savedNotLive()) {
     const s = { host: r.host, name: r.name, kind: r.kind, label: r.label || r.name,
-                path: r.path, args: r.args || "", tags: r.tags || [] };
+                path: r.path, args: r.args || "", tags: r.tags || [], favorite: !!r.favorite };
     const text = paletteText(s);
     const m = fuzzyScore(q, text);
     if (m) scored.push({ session: s, text, positions: m.positions, score: m.score, saved: true });

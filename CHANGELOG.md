@@ -9,6 +9,30 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.30.0]
+
+### Added
+
+- **A `⋮` overflow menu on rail rows.** Five icon buttons at the right edge of
+  every row — star, split, edit, restart, ✕ — sat exactly where people aimed
+  when picking a different session, and got hit by accident. The row now carries
+  one `⋮` that opens a small popover with *labelled* rows (save/remove from
+  favorites, open in split, edit, restart) plus the ✕ inline and visible — the
+  forget stays one click deep. Touch devices get the same `⋮`/✕ always visible
+  (and this fixes an old mobile bug: the previous touch override lost on
+  stylesheet order, so the row buttons never actually showed on a phone).
+
+### Changed
+
+- **A favorite now survives closing its session.** The star marks the
+  *launcher* (the saved profile), not the running instance, so ✕ on a
+  favorited session kills the tmux session and keeps the profile — the
+  Favorites menu keeps its row and one click starts a fresh instance.
+  ✕ on a non-favorite still means kill-and-forget (unchanged), and forgetting
+  a favorite stays deliberate: unfavorite it first, or the new ✕ on a row in
+  the Favorites menu. `/api/kill` reports `kept` so the UI can say which
+  happened.
+
 ## [2.29.0]
 
 ### Added
