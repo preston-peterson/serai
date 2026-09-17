@@ -58,6 +58,34 @@ def _current_version() -> str:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     auth.startup_banner()  # prints the one-time setup code while no users exist
+
+    # Reap exited PTY children. pty.fork() at ws_attach spawns a tmux client per
+    # attach; SIGTERM on close ends it, but nothing collected its exit status, so
+    # the entry stayed in the PID table forever — one [tmux: client] <defunct>
+    # per attach, growing without bound (2026-09-17 homelab brief: 98 and
+    # counting). The loop must drain until waitpid says "none left": asyncio's
+    # child watcher also reaps, and a single-shot handler leaves the rest.
+    # Safe with KillMode=process: waitpid collects only *finished* children —
+    # the tmux server and every live session are untouched (invariant #4).
+    loop = asyncio.get_running_loop()
+
+    def _reap() -> None:
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break            # no children at all (asyncio watcher got them)
+            if pid == 0:
+                break            # no more finished children waiting
+
+    try:
+        loop.add_signal_handler(signal.SIGCHLD, _reap)
+    except (NotImplementedError, RuntimeError, ValueError):
+        # Non-Unix platforms, a loop that isn't the main thread (uvicorn workers
+        # with reload/workers>1), or a loop that forbids signal handlers: no
+        # reaping, which is the pre-fix behaviour rather than a new failure.
+        pass
+
     yield
 
 

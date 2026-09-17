@@ -9,6 +9,18 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.30.1]
+
+### Fixed
+
+- **serai no longer leaks `tmux: client` zombies.** Every attach forked a tmux
+  client under a PTY; when it exited, nothing collected its exit status, so one
+  `<defunct>` entry stayed in the PID table forever — 98 on the reporting
+  host, growing with each attach. uvicorn now reaps finished children on
+  `SIGCHLD`, draining until none are left. Only *finished* clients are reaped:
+  the tmux server and every live session are untouched, so `KillMode=process`
+  and the restart-must-never-drop-a-session rule are unaffected.
+
 ## [2.30.0]
 
 ### Added
