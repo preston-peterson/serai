@@ -772,6 +772,102 @@ def test_ws_server_sends_keepalive_on_an_idle_attach(monkeypatch):
     raise AssertionError("server never sent a keepalive ping")
 
 
+def _spawn_exiting_child() -> int:
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    return pid
+
+
+def test_reap_collects_tracked_pid_but_never_steals_other_children():
+    """The v2.30.1 drain was waitpid(-1) — under the new always-on timer that
+    would race the thread pool's subprocess.run children and steal their exit
+    status (CPython then reports rc=0 for a failed command). The reaper must
+    collect ONLY the pids pty.fork registered."""
+    import subprocess
+    import sys
+    import serai.main as main
+
+    zombie = _spawn_exiting_child()
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.05); raise SystemExit(3)"])
+    try:
+        main._pty_pids.add(zombie)
+        deadline = time.time() + 2.0
+        while zombie in main._pty_pids and time.time() < deadline:
+            main._reap()
+            if zombie in main._pty_pids:
+                time.sleep(0.01)
+        assert zombie not in main._pty_pids          # tracked zombie collected
+        with pytest.raises(ChildProcessError):       # status already taken
+            os.waitpid(zombie, os.WNOHANG)
+        other.wait(timeout=2)
+        assert other.returncode == 3                 # ...and was not stolen
+    finally:
+        main._pty_pids.discard(zombie)
+        if other.poll() is None:
+            other.kill()
+            other.wait(timeout=2)
+
+
+def test_reap_forever_collects_with_no_signal_handler_armed():
+    """The uvloop situation: add_signal_handler(SIGCHLD) is impossible there,
+    so the timer alone must do the job. A plain asyncio.run loop here has no
+    SIGCHLD handler armed at all — same as uvloop in production."""
+    import asyncio
+    import serai.main as main
+
+    async def scenario():
+        zombie = _spawn_exiting_child()
+        main._pty_pids.add(zombie)
+        task = asyncio.ensure_future(main._reap_forever())
+        deadline = time.time() + 2.0
+        while zombie in main._pty_pids and time.time() < deadline:
+            await asyncio.sleep(0.02)
+        task.cancel()
+        return zombie
+
+    orig = main._REAP_INTERVAL
+    main._REAP_INTERVAL = 0.02
+    try:
+        zombie = asyncio.run(scenario())
+    finally:
+        main._REAP_INTERVAL = orig
+    assert zombie not in main._pty_pids
+    try:
+        os.waitpid(zombie, os.WNOHANG)
+    except ChildProcessError:
+        pass  # reaped, as required
+
+
+def test_lifespan_reports_which_reaper_path_armed(monkeypatch, capsys):
+    """Silence was half the bug: 2.30.1 swallowed the uvloop RuntimeError and
+    the service ran its whole lifetime unarmed while looking healthy."""
+    import asyncio
+    import serai.main as main
+
+    monkeypatch.setattr(main.auth, "startup_banner", lambda: None)
+
+    async def enter_exit():
+        async with main._lifespan(main.app):
+            pass
+
+    asyncio.run(enter_exit())
+    out = capsys.readouterr().out
+    assert "zombie reaper armed: timer + SIGCHLD" in out
+
+    async def enter_exit_forced_failure():
+        loop = asyncio.get_running_loop()
+        def boom(sig, handler, *a):
+            raise RuntimeError("cannot add a signal handler for SIGCHLD")
+        monkeypatch.setattr(loop, "add_signal_handler", boom)
+        async with main._lifespan(main.app):
+            pass
+
+    asyncio.run(enter_exit_forced_failure())
+    out = capsys.readouterr().out
+    assert "zombie reaper armed: timer only" in out
+
+
 # --- files.py SFTP path ----------------------------------------------------
 #
 # These mock paramiko so the remote file path is exercised without a real host.

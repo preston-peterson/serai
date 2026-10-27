@@ -55,6 +55,35 @@ def _current_version() -> str:
     return _ver_cache["v"]
 
 
+# Every pty.fork() child pid we have not yet collected the exit status of
+# (ws_attach). The reaper walks only these — see _reap for why.
+_pty_pids: set[int] = set()
+
+# How often the belt-and-braces timer runs. Zombies cost a PID slot and nothing
+# else, so 5s is plenty; the signal handler (where armable) is immediate.
+_REAP_INTERVAL = 5.0
+
+
+def _reap() -> None:
+    # waitpid *per tracked pid*, never a bare waitpid(-1) drain: this runs on
+    # the event loop while the thread pool runs subprocess.run for tmux calls,
+    # and an unqualified drain steals their exit status (CPython then reports
+    # rc=0 for a child that failed — a tmux command silently "succeeded").
+    for pid in list(_pty_pids):
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            done = pid  # already gone; drop the bookkeeping
+        if done:
+            _pty_pids.discard(pid)
+
+
+async def _reap_forever() -> None:
+    while True:
+        await asyncio.sleep(_REAP_INTERVAL)
+        _reap()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     auth.startup_banner()  # prints the one-time setup code while no users exist
@@ -63,30 +92,34 @@ async def _lifespan(app: FastAPI):
     # attach; SIGTERM on close ends it, but nothing collected its exit status, so
     # the entry stayed in the PID table forever — one [tmux: client] <defunct>
     # per attach, growing without bound (2026-09-17 homelab brief: 98 and
-    # counting). The loop must drain until waitpid says "none left": asyncio's
-    # child watcher also reaps, and a single-shot handler leaves the rest.
-    # Safe with KillMode=process: waitpid collects only *finished* children —
-    # the tmux server and every live session are untouched (invariant #4).
+    # counting). v2.30.1 shipped *this* job as a SIGCHLD handler, which was
+    # silently dead in production: uvicorn auto-selects uvloop, and uvloop owns
+    # SIGCHLD for its own subprocess tracking, so add_signal_handler raised
+    # RuntimeError into a best-effort except and the reaper never armed
+    # (2026-10-26 homelab brief: 672 zombies, none reaped all service lifetime).
+    # The timer is the fix — loop-agnostic and independent of handler survival;
+    # the handler stays as an optimisation where it *can* arm, and whichever
+    # path ran is now logged instead of swallowed. Safe with KillMode=process:
+    # waitpid collects only *finished* children — the tmux server and every
+    # live session are untouched (invariant #4).
     loop = asyncio.get_running_loop()
-
-    def _reap() -> None:
-        while True:
-            try:
-                pid, _ = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break            # no children at all (asyncio watcher got them)
-            if pid == 0:
-                break            # no more finished children waiting
-
+    sigchld_armed = False
     try:
         loop.add_signal_handler(signal.SIGCHLD, _reap)
-    except (NotImplementedError, RuntimeError, ValueError):
-        # Non-Unix platforms, a loop that isn't the main thread (uvicorn workers
-        # with reload/workers>1), or a loop that forbids signal handlers: no
-        # reaping, which is the pre-fix behaviour rather than a new failure.
-        pass
-
-    yield
+        sigchld_armed = True
+        print("[serai] zombie reaper armed: timer + SIGCHLD")
+    except (NotImplementedError, RuntimeError, ValueError) as exc:
+        # Non-Unix platforms, a non-main-thread loop (uvicorn workers>1), or a
+        # loop that owns SIGCHLD itself (uvloop): the timer alone must suffice.
+        print(f"[serai] zombie reaper armed: timer only "
+              f"(SIGCHLD unavailable: {exc})")
+    reap_task = asyncio.create_task(_reap_forever())
+    try:
+        yield
+    finally:
+        reap_task.cancel()
+        if sigchld_armed:
+            loop.remove_signal_handler(signal.SIGCHLD)
 
 
 app = FastAPI(title="serai", lifespan=_lifespan)
@@ -1129,6 +1162,10 @@ async def ws_attach(ws: WebSocket) -> None:
             pass
         os.execvp(argv[0], argv)
         os._exit(1)
+
+    # Bookkeep for the reaper: this exact pid must eventually be waitpid'd,
+    # however this attach ends (see _reap_forever / the 2026-10-26 brief).
+    _pty_pids.add(pid)
 
     loop = asyncio.get_event_loop()
     # Non-blocking so a TUI that doesn't drain stdin (paste it doesn't

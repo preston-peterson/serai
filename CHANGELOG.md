@@ -9,6 +9,25 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [2.30.2]
+
+### Fixed
+
+- **The zombie reaper actually runs in production now.** 2.30.1's fix armed it
+  with a `SIGCHLD` handler — but uvicorn auto-selects uvloop when installed,
+  and uvloop owns `SIGCHLD` for its own subprocess tracking, so registering the
+  handler raised `RuntimeError` into a best-effort `except` and the reaper
+  never armed. The live service leaked one `tmux: client` zombie per attach
+  for its entire lifetime (672 and climbing on the reporting host), while
+  looking healthy. Reaping is now a periodic task over the pids `pty.fork()`
+  registered — loop-agnostic, and independent of any handler surviving — with
+  the `SIGCHLD` handler kept only as an optimisation where it *can* arm. Which
+  path armed is logged at startup instead of swallowed. Tracked-pid reaping
+  also avoids a worse bug the old `waitpid(-1)` drain would have had once
+  always-on: stealing the exit status of a `subprocess.run` child, which
+  CPython then misreports as success. Only *finished* children are collected;
+  the tmux server and every live session are untouched (invariant #4).
+
 ## [2.30.1]
 
 ### Fixed
@@ -20,6 +39,7 @@ running instance always reports what it is.
   `SIGCHLD`, draining until none are left. Only *finished* clients are reaped:
   the tmux server and every live session are untouched, so `KillMode=process`
   and the restart-must-never-drop-a-session rule are unaffected.
+  *(Ineffective under uvloop, which production uses — fixed in 2.30.2.)*
 
 ## [2.30.0]
 
