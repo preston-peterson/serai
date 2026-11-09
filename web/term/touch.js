@@ -1,17 +1,29 @@
-// Touch scrolling, one way everywhere, with momentum.
+// Touch scrolling.
 //
 // Left alone, a drag on a terminal behaved three ways (the owner: "sometimes
 // the scroll sticks and sometimes it's smooth and fast"): where the finger
-// landed on xterm's scroll layer the browser scrolled natively, with
-// momentum; on the text, xterm's own touch handler moved the view exactly as
-// far as the finger and stopped dead; and in an app with mouse tracking on it
-// did nothing at all. So serai takes every single-finger vertical drag:
+// landed on xterm's scroll layer (.xterm-viewport) the phone scrolled
+// natively, with its own momentum -- the good case; on the text layer above
+// it, xterm's own touch handler moved the view exactly as far as the finger
+// and stopped dead; with mouse tracking on, nothing moved.
 //
-//   - the normal buffer (shell scrollback): the viewport scrolls pixel by
-//     pixel and keeps gliding after the finger lifts, slowing with friction;
-//   - the alternate screen (vim, less, an agent TUI) or any app tracking the
-//     mouse: the same drag and glide, delivered as wheel steps -- xterm turns
-//     those into mouse reports or arrow keys for the app, as a wheel would.
+// A first fix replaced all of it with a JS scroll + glide. On a real phone
+// that was worse (fine headless): the phone's own scroll physics are better
+// than anything simulated, and a native scroll that has started can't be
+// cancelled, so the two fought. So now:
+//
+//   - the normal buffer: the phone layout lets touches fall through the text
+//     layer to the scroll layer (CSS, body.phone .xterm-screen), so EVERY
+//     drag is the native, momentum scroll. We only keep xterm's own
+//     no-momentum handler from stacking on top of it (stopPropagation, no
+//     preventDefault -- the browser keeps the gesture);
+//   - the alternate screen (vim, less, an agent TUI) or an app tracking the
+//     mouse has no native scrollback, so there a drag becomes wheel steps
+//     (xterm turns them into mouse reports or arrow keys, as a wheel would),
+//     with a short glide;
+//   - a touch that lands outside the scroll layer anyway (a desktop
+//     touchscreen, where the text layer must stay clickable) gets the JS
+//     pixel scroll + glide as the fallback.
 //
 // Taps are untouched: a gesture only becomes a scroll once it has moved
 // SLOP px, mostly vertically, so a tap still focuses the terminal.
@@ -26,7 +38,7 @@ const MAX_STEPS = 3;         // wheel steps per frame at most (app redraws)
 export function installTouchScroll(term) {
   const el = term.element;
   let startX = 0, startY = 0, lastY = 0;
-  let owning = false, tracking = false;
+  let owning = false, tracking = false, native = false;
   let samples = [];
   let acc = 0;               // wheel mode: pixels not yet sent as a step
   let raf = 0;
@@ -85,6 +97,12 @@ export function installTouchScroll(term) {
     owning = false;
     if (!tracking) return;
     const t = e.touches[0];
+    const v = viewport();
+    // The browser scrolls the viewport natively when the touch is inside it
+    // and there is scrollback to move; then our only job is to stay out of
+    // the way (and keep xterm's own handler out too).
+    native = !wheelMode() && !!v && v.contains(e.target);
+    if (native) e.stopPropagation();
     startX = t.clientX;
     startY = lastY = t.clientY;
     samples = [{ t: e.timeStamp, y: t.clientY }];
@@ -93,6 +111,7 @@ export function installTouchScroll(term) {
 
   el.addEventListener("touchmove", (e) => {
     if (!tracking || e.touches.length !== 1) return;
+    if (native) { e.stopPropagation(); return; }      // the browser has this one
     const t = e.touches[0];
     if (!owning) {
       const dy = Math.abs(t.clientY - startY), dx = Math.abs(t.clientX - startX);
@@ -111,7 +130,7 @@ export function installTouchScroll(term) {
   el.addEventListener("touchend", (e) => {
     if (!tracking) return;
     tracking = false;
-    if (!owning) return;                           // a tap: xterm handles it
+    if (native || !owning) return;                 // native scroll, or a tap
     e.stopPropagation();
     const first = samples[0], last = samples[samples.length - 1];
     const dt = last.t - first.t;

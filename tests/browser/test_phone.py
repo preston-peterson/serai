@@ -77,34 +77,26 @@ def test_phone_list_terminal_keybar_select_and_sheet(stack):
     assert not failures, "phone failures:\n  " + "\n  ".join(failures)
 
 
-FLING = """
-(async () => {
-  const el = document.querySelector('.pane.focused .xterm');
-  const vp = el.querySelector('.xterm-viewport');
-  const r = el.getBoundingClientRect();
-  const x = r.left + r.width / 2;
-  const at = (y) => [new Touch({identifier: 1, target: el, clientX: x, clientY: y, pageX: x, pageY: y})];
-  const fire = (type, y) => el.dispatchEvent(new TouchEvent(type, {
-    touches: type === 'touchend' ? [] : at(y), changedTouches: at(y), bubbles: true, cancelable: true}));
-  const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
-  const out = {start: vp.scrollTop};
-  // a tap: no movement, no scroll
-  fire('touchstart', 300); fire('touchend', 300); await pause(50);
-  out.afterTap = vp.scrollTop;
-  // a quick downward flick (finger moves down = back into history)
-  let y = 200;
-  fire('touchstart', y);
-  for (let i = 0; i < 8; i++) { y += 30; fire('touchmove', y); await pause(16); }
-  out.atRelease = vp.scrollTop;
-  fire('touchend', y);
-  await pause(450);
-  out.afterGlide = vp.scrollTop;
-  return out;
-})()
-"""
+
+async def touch_drag(c, x, y0, dy, steps):
+    """A drag through the browser's real touch pipeline (CDP), which -- unlike
+    page-built TouchEvents -- starts a native scroll, as a phone does."""
+    await c.send("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": x, "y": y0, "id": 1}])
+    y = y0
+    for _ in range(steps):
+        y += dy
+        await c.send("Input.dispatchTouchEvent", type="touchMove", touchPoints=[{"x": x, "y": y, "id": 1}])
+        await asyncio.sleep(0.016)
+    await c.send("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
 
 
-def test_phone_touch_scroll_follows_the_finger_and_glides(stack):
+VP = "document.querySelector('.pane.focused .xterm-viewport').scrollTop"
+
+
+def test_phone_touch_scroll_is_the_native_scroll_and_taps_still_type(stack):
+    """On a phone every drag is the browser's own (momentum) scroll: the text
+    layer lets touches through to xterm's scroll layer. A JS scroll + glide
+    replacing it tested fine headless and felt worse on a real phone."""
     async def run():
         c = await phone_page(stack)
         try:
@@ -112,10 +104,20 @@ def test_phone_touch_scroll_follows_the_finger_and_glides(stack):
             await c.eval("[...document.querySelectorAll('.pcard')].find(x => x.querySelector('.name').textContent === 'demo').click()")
             await c.wait(f"!document.querySelector('.p-term').hidden && {TERM}.includes('line-')", 10)
             await asyncio.sleep(0.5)
-            r = await c.eval(FLING)
-            assert r["afterTap"] == r["start"], f"a tap must not scroll: {r}"
-            assert r["start"] - r["atRelease"] >= 150, f"the view must follow the drag: {r}"
-            assert r["atRelease"] - r["afterGlide"] >= 40, f"and keep gliding after release: {r}"
+            assert await c.eval("getComputedStyle(document.querySelector('.pane.focused .xterm-screen')).pointerEvents") == "none"
+            x, y = await c.eval("(()=>{const r=document.querySelector('.pane.focused .xterm').getBoundingClientRect();"
+                                "return [r.left+r.width/2, r.top+r.height/2]})()")
+            await c.eval("document.activeElement && document.activeElement.blur()")
+            before = await c.eval(VP)
+            await c.send("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": x, "y": y, "id": 1}])
+            await c.send("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+            await asyncio.sleep(0.3)
+            assert await c.eval(VP) == before, "a tap must not scroll"
+            assert await c.eval("document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')"), \
+                "a tap must still focus the terminal (so the keyboard comes up)"
+            await touch_drag(c, x, y - 100, 5, 30)           # finger down 150 px: back into history
+            moved = before - await c.eval(VP)
+            assert moved >= 100, f"the drag must scroll the history natively (moved {moved}px)"
         finally:
             await c.close()
 
