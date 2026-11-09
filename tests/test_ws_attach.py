@@ -205,3 +205,22 @@ def test_unreachable_host_neither_creates_nor_skips_the_owner_check(tmux, monkey
         assert c.pump(lambda c: c.close_code is not None)
     assert c.close_code == 1011, "unknown is retryable, never a final 4410"
     assert created == []
+
+
+def test_listing_flags_an_agent_session_parked_at_its_shell(tmux, monkeypatch):
+    """at_prompt drives the v3 relaunch strip: an agent kind whose harness has
+    exited to the _EXIT_SHELL prompt. A shell session is never "at prompt"."""
+    monkeypatch.setitem(sessions._AGENTS, "fakeagent",
+                        {"cmd": "true", "prefix": "fa-", "chip": "fa", "glyph": "x", "resume": {}})
+    monkeypatch.setattr(sessions, "AGENT_KINDS", sessions.AGENT_KINDS | {"fakeagent"})
+    assert sessions.create_session(sessions.create_argv("local", "fa-parked", "fakeagent"))
+    assert sessions.create_session(sessions.create_argv("local", "shell-plain", "shell"))
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        by = {s.name: s for s in sessions.list_sessions("local")}
+        if "fa-parked" in by and by["fa-parked"].at_prompt:
+            break
+        time.sleep(0.2)
+    assert by["fa-parked"].at_prompt is True
+    assert by["shell-plain"].at_prompt is False
+    assert by["fa-parked"].as_dict()["at_prompt"] is True

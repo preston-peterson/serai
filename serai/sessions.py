@@ -217,6 +217,9 @@ class Session:
     alt: bool = False    # pane is on the alternate screen (a full-screen TUI):
                          # no tmux scrollback exists, so scrolling must go to the
                          # app via the wheel rather than to tmux's copy-mode
+    at_prompt: bool = False  # an agent session whose harness exited (_EXIT_SHELL):
+                             # a shell is in the foreground. The v3 UI offers
+                             # "Relaunch <agent>" for exactly these.
 
     @property
     def id(self) -> str:
@@ -596,6 +599,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
             Session(host=host, name=name, kind=kind, label=label, state=state,
                     attached=attached, tags=tags, path=path, dir=start_dir,
                     args=extra_args, owner=owner, tail=_preview(lines), alt=alt,
+                    at_prompt=kind in AGENT_KINDS and parked_shell,
                     age=(round(secs) if secs is not None else -1.0))
         )
     # Whatever this poll did not see is gone from this host: forget it, so the map
