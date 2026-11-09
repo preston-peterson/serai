@@ -75,3 +75,48 @@ def test_phone_list_terminal_keybar_select_and_sheet(stack):
 
     asyncio.run(asyncio.wait_for(run(), 90))
     assert not failures, "phone failures:\n  " + "\n  ".join(failures)
+
+
+FLING = """
+(async () => {
+  const el = document.querySelector('.pane.focused .xterm');
+  const vp = el.querySelector('.xterm-viewport');
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const at = (y) => [new Touch({identifier: 1, target: el, clientX: x, clientY: y, pageX: x, pageY: y})];
+  const fire = (type, y) => el.dispatchEvent(new TouchEvent(type, {
+    touches: type === 'touchend' ? [] : at(y), changedTouches: at(y), bubbles: true, cancelable: true}));
+  const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const out = {start: vp.scrollTop};
+  // a tap: no movement, no scroll
+  fire('touchstart', 300); fire('touchend', 300); await pause(50);
+  out.afterTap = vp.scrollTop;
+  // a quick downward flick (finger moves down = back into history)
+  let y = 200;
+  fire('touchstart', y);
+  for (let i = 0; i < 8; i++) { y += 30; fire('touchmove', y); await pause(16); }
+  out.atRelease = vp.scrollTop;
+  fire('touchend', y);
+  await pause(450);
+  out.afterGlide = vp.scrollTop;
+  return out;
+})()
+"""
+
+
+def test_phone_touch_scroll_follows_the_finger_and_glides(stack):
+    async def run():
+        c = await phone_page(stack)
+        try:
+            await c.wait("document.querySelectorAll('.pcard').length >= 2", 15)
+            await c.eval("[...document.querySelectorAll('.pcard')].find(x => x.querySelector('.name').textContent === 'demo').click()")
+            await c.wait(f"!document.querySelector('.p-term').hidden && {TERM}.includes('line-')", 10)
+            await asyncio.sleep(0.5)
+            r = await c.eval(FLING)
+            assert r["afterTap"] == r["start"], f"a tap must not scroll: {r}"
+            assert r["start"] - r["atRelease"] >= 150, f"the view must follow the drag: {r}"
+            assert r["atRelease"] - r["afterGlide"] >= 40, f"and keep gliding after release: {r}"
+        finally:
+            await c.close()
+
+    asyncio.run(asyncio.wait_for(run(), 60))
