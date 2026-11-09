@@ -430,6 +430,26 @@ function createPane() {
   t.onData((d) => {
     if (p.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(new TextEncoder().encode(d));
   });
+  // Binary data (X10/UTF-8 mouse reports) is a separate xterm event; without it
+  // a mouse-tracking app never sees clicks (v3: apps own the mouse, not tmux).
+  t.onBinary((d) => {
+    if (!(p.ws && p.ws.readyState === WebSocket.OPEN)) return;
+    const u8 = new Uint8Array(d.length);
+    for (let i = 0; i < d.length; i++) u8[i] = d.charCodeAt(i) & 255;
+    p.ws.send(u8);
+  });
+  // tmux already answers the pane's terminal queries (device attributes,
+  // cursor position, colour and mode reports) itself. The raw stream still
+  // carries the query, and xterm would answer it a second time, typing the
+  // reply into the prompt as ^[[..R garbage. Swallow them here.
+  for (const h of [{ final: "c" }, { prefix: ">", final: "c" }, { final: "n" },
+                   { prefix: "?", final: "n" }, { prefix: "?", intermediates: "$", final: "p" },
+                   { intermediates: "$", final: "p" }, { final: "t" }]) {
+    t.parser.registerCsiHandler(h, () => true);
+  }
+  for (const id of [4, 10, 11, 12]) {
+    t.parser.registerOscHandler(id, (data) => data.endsWith("?"));   // only the queries
+  }
   // Native paste (Ctrl+V on Windows, Cmd+V). clipboardData is on the event, so
   // this works on a remote origin without the clipboard-read permission that
   // the right-click path needs. Capture so xterm doesn't also paste.
@@ -1723,8 +1743,10 @@ function paneOpenSocket(p, target, gen) {
   if (target.resume) q.set("resume", target.resume);
   if (target.args) q.set("args", target.args);   // extra agent args; server re-cleans them
   if (target.tags) q.set("tags", target.tags);   // tags at create; ignored on re-attach (session exists)
-  q.set("mouse", termSettings.scrollbackMouse ? "1" : "0");
-  q.set("history", String(termSettings.scrollback));  // tmux history-limit (depth)
+  q.set("history", String(termSettings.scrollback));  // tmux history-limit + seeded scrollback
+  paneFit(p);                                         // create/seed at the size we will show
+  q.set("cols", String(p.term.cols));
+  q.set("rows", String(p.term.rows));
 
   const sock = new WebSocket(`${proto}://${location.host}/ws/attach?${q}`);
   p.ws = sock;
@@ -1754,9 +1776,24 @@ function paneOpenSocket(p, target, gen) {
   };
   sock.onmessage = (e) => {
     if (typeof e.data === "string") {
-      // keepalive — PTY output arrives as bytes, never as JSON text
+      // Control frames (v3 bridge): pane output is always binary, so a JSON
+      // text frame is never terminal content.
       if (e.data.charAt(0) === "{") {
-        try { if (JSON.parse(e.data).ping) return; } catch { /* fall through */ }
+        let m = null;
+        try { m = JSON.parse(e.data); } catch { /* not JSON: show it */ }
+        if (m) {
+          if (m.ping) return;
+          if (m.seed === "begin") {
+            // A full snapshot follows: history, screen, modes, cursor.
+            p.term.reset();
+            if (m.cols && m.rows && (m.cols !== p.term.cols || m.rows !== p.term.rows)) p.term.resize(m.cols, m.rows);
+            return;
+          }
+          if (m.seed === "end") return;
+          if (m.size) { p.term.resize(m.size.cols, m.size.rows); return; }
+          if (m.error) { p.term.write(`\r\n\x1b[31m[serai] ${m.error}\x1b[0m\r\n`); return; }
+          return;
+        }
       }
       p.term.write(e.data);
     } else {

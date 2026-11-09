@@ -1,7 +1,7 @@
 """tmux control-mode (``tmux -C``) client core: framing, codecs, and an asyncio
 client. This is the protocol layer for the v3 attach bridge -- nothing here
-imports FastAPI or knows about websockets; ``main.py`` wiring is deliberately
-out of scope for now.
+imports FastAPI or knows about websockets; ``bridge.py`` builds the browser
+side on top of it.
 
 Why control mode instead of a PTY: a PTY can only carry what the pane *shows*,
 so selection, copy, and scrollback have to be guessed back out of rendered
@@ -15,7 +15,12 @@ Protocol (tmux 3.6 CONTROL MODE):
   - Each command produces one block: ``%begin <time> <num> <flags>``, body
     lines, then ``%end <time> <num> <flags>`` -- or ``%error ...`` in place of
     the ``%end`` when the command failed. Blocks never interleave, and no
-    notification arrives inside a block.
+    notification arrives inside a block. (``refresh-client -A`` writes its
+    ``%pause``/``%continue`` *inside* its own block, as body lines.)
+  - Several commands on one line (``a ; b``) run back to back in one server
+    loop iteration and reply with one block each, contiguously. The first
+    failing command ends the line: later commands produce no block. A line
+    that fails to parse produces a single ``%error`` block.
   - Notifications are lines starting with ``%``: ``%output <pane> <value>``,
     ``%extended-output <pane> <age> <flags> : <value>``, ``%pause <pane>``,
     ``%continue <pane>``, ``%exit [reason]``, ``%session-changed <id> <name>``,
@@ -55,6 +60,9 @@ ARG_SAFE = re.compile(r"^[A-Za-z0-9_@%$:=,.+/#{}?!-]+$")
 
 _ON_EXIT = Callable[[str], None]
 
+# send-keys lines in flight at once for one send_pane call.
+_SEND_WINDOW = 32
+
 
 class Fmt(str):
     """A module-owned control-mode *format string* (may contain spaces and
@@ -64,6 +72,27 @@ class Fmt(str):
 
 
 # Pane states accepted by `refresh-client -A <pane>:<state>` (tmux 3.6).
+class Reply(list):
+    """One command's reply body (raw lines), plus ``seq``: the client's
+    :attr:`ControlClient.notify_seq` at the moment the block ended. A
+    notification dispatched before this reply carries a seq <= ``reply.seq``;
+    one dispatched after it, greater. That is how a caller splits the live
+    pane stream around a snapshot it just took."""
+
+    seq: int = 0
+
+
+class _Pending:
+    """A FIFO entry: one submitted control line expecting ``expect`` blocks."""
+
+    __slots__ = ("fut", "expect", "replies")
+
+    def __init__(self, fut: asyncio.Future, expect: int) -> None:
+        self.fut = fut
+        self.expect = expect
+        self.replies: list[Reply] = []
+
+
 _PANE_STATES = ("on", "off", "continue", "pause")
 _PANE_ID = re.compile(r"^%[0-9]+$")
 
@@ -138,8 +167,12 @@ def parse_line(line: bytes, in_block: bool) -> Line:
                     flags=_int_arg(a, 3))
     if line.startswith(b"%end") or line.startswith(b"%error"):
         a = line.split()
+        # raw kept: inside a block this is only a terminator if its guard
+        # matches the %begin's (ControlClient._handle); otherwise it is pane
+        # text that merely starts with "%end" and stays body, verbatim.
         return Line(kind=line[1:].split(b" ", 1)[0].decode(errors="replace"),
-                    time=_int_arg(a, 1), num=_int_arg(a, 2), flags=_int_arg(a, 3))
+                    time=_int_arg(a, 1), num=_int_arg(a, 2), flags=_int_arg(a, 3),
+                    raw=line)
     if line.startswith(b"%"):
         name = line[1:].split(None, 1)[0].decode(errors="replace")
         if name == "extended-output":
@@ -238,8 +271,12 @@ class ControlClient:
     """
 
     def __init__(self, argv: list[str], *, cmd_timeout: float = 10.0,
-                 stream_limit: int = 8 * 1024 * 1024) -> None:
+                 stream_limit: int = 8 * 1024 * 1024,
+                 env: dict[str, str] | None = None) -> None:
         self.argv = list(argv)
+        self.env = env  # None inherits ours
+        # Bumped once per dispatched notification; see Reply.seq.
+        self.notify_seq = 0
         self.cmd_timeout = cmd_timeout
         self.stream_limit = stream_limit
         self.session_id: str | None = None
@@ -248,10 +285,11 @@ class ControlClient:
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
-        self._pending: collections.deque[asyncio.Future] = collections.deque()
+        self._pending: collections.deque[_Pending] = collections.deque()
         self._subs: dict[str, list[Callable[[Line], None]]] = {}
         self._in_block = False
         self._block_body: list[bytes] = []
+        self._block_tag: tuple[int, int, int] | None = None
         self._closed_fut: asyncio.Future | None = None
         self._pause_panes: set[bytes] = set()
         self._on_exit_cb: _ON_EXIT | None = None
@@ -326,6 +364,7 @@ class ControlClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=self.stream_limit,
+            env=self.env,
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._reader = asyncio.create_task(self._read_loop())
@@ -357,7 +396,7 @@ class ControlClient:
         except Exception:
             pass
 
-    async def send_command(self, *args: str) -> list[bytes]:
+    async def send_command(self, *args: str) -> Reply:
         """Write one command line, await its reply block, return the body lines.
 
         Replies arrive in command order, so a FIFO of futures matches blocks to
@@ -366,32 +405,57 @@ class ControlClient:
         ``ControlError`` when the block ends ``%error``; ``ControlClosed`` when
         the connection dies or the reply outlives ``cmd_timeout``.
         """
-        for a in args:
-            if isinstance(a, Fmt):
-                continue
-            if not isinstance(a, str) or not ARG_SAFE.match(a):
-                raise ValueError(f"unsafe control-mode argument: {a!r}")
+        (reply,) = await self._submit([args])
+        return reply
+
+    async def send_batch(self, *commands: tuple[str, ...]) -> list[Reply]:
+        """Run several commands as ONE control line (``a ; b ; c``), one
+        :class:`Reply` each, in order.
+
+        tmux runs a line's commands back to back inside one server loop
+        iteration, so no pane output can land between them: this is how to
+        take a consistent snapshot (cursor, grid, history) of a pane that is
+        still writing. tmux stops a line at its first failing command and
+        later ones produce no block at all, so any ``%error`` ends the batch
+        with ``ControlError`` and the partial replies are dropped. Arguments
+        are validated exactly as in :meth:`send_command`; ``;`` is outside
+        ``ARG_SAFE``, so no argument can split the line itself.
+        """
+        if not commands:
+            return []
+        return await self._submit(list(commands))
+
+    async def _submit(self, commands: list[tuple[str, ...]]) -> list[Reply]:
+        for args in commands:
+            if not args:
+                raise ValueError("empty control-mode command")
+            for a in args:
+                if isinstance(a, Fmt):
+                    continue
+                if not isinstance(a, str) or not ARG_SAFE.match(a):
+                    raise ValueError(f"unsafe control-mode argument: {a!r}")
         if self._proc is None or self._proc.stdin is None:
             raise ControlClosed("control client is not started")
         if self.closed.done():
             raise ControlClosed("control connection is closed")
         loop = asyncio.get_running_loop()
-        fut: asyncio.Future = loop.create_future()
-        self._pending.append(fut)
+        entry = _Pending(loop.create_future(), len(commands))
+        self._pending.append(entry)
+        line = " ; ".join(" ".join(args) for args in commands)
         try:
-            self._proc.stdin.write(" ".join(args).encode() + b"\n")
+            self._proc.stdin.write(line.encode() + b"\n")
             await self._proc.stdin.drain()
         except (ConnectionResetError, BrokenPipeError, OSError) as exc:
-            self._discard(fut)
+            self._discard(entry)
             raise ControlClosed(f"control stdin failed: {exc}") from exc
         try:
-            return await asyncio.wait_for(fut, self.cmd_timeout)
+            return await asyncio.wait_for(entry.fut, self.cmd_timeout)
         except asyncio.TimeoutError:
-            self._discard(fut)
+            self._discard(entry)
             await self.close()
-            raise ControlClosed(f"command timed out: {args[0] if args else ''}")
+            raise ControlClosed(f"command timed out: {commands[0][0]}")
         except ControlClosed:
-            self._discard(fut)
+            self._discard(entry)
             raise
 
     async def close(self) -> None:
@@ -456,18 +520,19 @@ class ControlClient:
 
     def _fail_pending(self, exc: BaseException) -> None:
         while self._pending:
-            fut = self._pending.popleft()
+            fut = self._pending.popleft().fut
             if not fut.done():
                 fut.set_exception(exc)
 
-    def _discard(self, fut: asyncio.Future) -> None:
+    def _discard(self, entry: _Pending) -> None:
         """A future whose wait failed is no longer being awaited; drop it from
         the FIFO so it neither leaks its exception nor misaligns later replies.
         A block that arrives for it later is dropped as a no-pending block."""
         try:
-            self._pending.remove(fut)
+            self._pending.remove(entry)
         except ValueError:
             pass
+        fut = entry.fut
         if fut.done() and not fut.cancelled():
             fut.exception()  # marks retrieved; quiets "exception never retrieved"
 
@@ -477,6 +542,7 @@ class ControlClient:
             fut.set_result(reason)
 
     def _notify(self, line: Line) -> None:
+        self.notify_seq += 1
         if line.name == "session-changed" and len(line.args) >= 1:
             self.session_id = line.args[0].decode(errors="replace")
             self.session_name = b" ".join(line.args[1:]).decode(errors="replace")
@@ -525,7 +591,7 @@ class ControlClient:
             reason = str(exc) or "read error"
         finally:
             if self._in_block and self._pending:
-                fut = self._pending.popleft()
+                fut = self._pending.popleft().fut
                 if not fut.done():
                     fut.set_exception(
                         ControlError(b"\n".join(self._block_body)
@@ -550,15 +616,23 @@ class ControlClient:
                 log.warning("nested %%begin (num=%s) -- dropping previous block",
                             line.num)
                 if self._pending:
-                    fut = self._pending.popleft()
+                    fut = self._pending.popleft().fut
                     if not fut.done():
                         fut.set_exception(
                             ControlError(b"\n".join(self._block_body)
                                          .decode(errors="replace")))
             self._in_block = True
             self._block_body = []
+            self._block_tag = (line.time, line.num, line.flags)
             return
         if line.kind in ("end", "error"):
+            if self._in_block and (line.time, line.num, line.flags) != self._block_tag:
+                # A captured pane line that starts with "%end"/"%error" (say,
+                # `echo %end` scrolled into history). tmux stamps the real
+                # terminator with its %begin's time/num/flags; anything else
+                # is body, or hostile pane text could cut a reply short.
+                self._block_body.append(line.raw)
+                return
             if not self._in_block:
                 log.warning("%s outside a block (num=%s) -- ignoring",
                             line.kind, line.num)
@@ -566,14 +640,22 @@ class ControlClient:
             body, self._block_body = self._block_body, []
             self._in_block = False
             if self._pending:
-                fut = self._pending.popleft()
-                if not fut.done():
-                    if line.kind == "error":
-                        fut.set_exception(
+                entry = self._pending[0]
+                if line.kind == "error":
+                    # Ends the whole line: tmux runs nothing after a failure.
+                    self._pending.popleft()
+                    if not entry.fut.done():
+                        entry.fut.set_exception(
                             ControlError(b"\n".join(body)
                                          .decode(errors="replace")))
-                    else:
-                        fut.set_result(body)
+                else:
+                    reply = Reply(body)
+                    reply.seq = self.notify_seq
+                    entry.replies.append(reply)
+                    if len(entry.replies) >= entry.expect:
+                        self._pending.popleft()
+                        if not entry.fut.done():
+                            entry.fut.set_result(entry.replies)
             # else: the initial attach block (or one whose wait already timed
             # out) -- drop it silently.
             return
@@ -591,10 +673,17 @@ class ControlClient:
         """Send raw ``data`` to ``pane`` byte-exactly via ``send-keys -H`` hex
         chunks. Nothing here can re-encode the bytes, so the TUI sees exactly
         what the client sent -- the property PTY paths kept losing."""
-        for chunk in hex_chunks(data):
+        chunks = hex_chunks(data)
+        # Pipelined: up to _SEND_WINDOW lines in flight, so a big paste over a
+        # remote link costs a few round trips, not one per KiB. Order holds --
+        # each line is written whole before the next coroutine runs, and the
+        # reply FIFO is append-ordered the same way.
+        for i in range(0, len(chunks), _SEND_WINDOW):
             # Each byte as its own argument ("send-keys -H 48 65 ..."): the
             # chunks are user data, so they ride ARG_SAFE, not Fmt.
-            await self.send_command("send-keys", "-H", "-t", pane, *chunk.split())
+            await asyncio.gather(*(
+                self.send_command("send-keys", "-H", "-t", pane, *chunk.split())
+                for chunk in chunks[i:i + _SEND_WINDOW]))
 
     async def capture(self, pane: str, start: int | str = -2000,
                       end: int | str = "-", **flags: bool) -> list[bytes]:

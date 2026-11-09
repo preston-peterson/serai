@@ -536,61 +536,80 @@ def _inner(command):
     return command[:-len(sessions._EXIT_SHELL)]
 
 
+def _new_cmd(argv):
+    # the shell-command tmux runs is the element right after `-s <name>`
+    return argv[argv.index("-s") + 2]
+
+
 def _claude_inner(path, resume=""):
-    # the shell-command tmux runs is the element just before the ';' separator
-    argv = sessions.attach_argv("local", "cc-x", "claude", path, resume)
-    return _inner(argv[:argv.index(";")][-1])
+    argv = sessions.create_argv("local", "cc-x", "claude", path, resume)
+    return _inner(_new_cmd(argv))
 
 
 def _agent_inner(kind, name, path, resume="", args=""):
     # the shell-command tmux runs for an agent session of the given kind
-    argv = sessions.attach_argv("local", name, kind, path, resume, args=args)
-    return _inner(argv[:argv.index(";")][-1])
+    argv = sessions.create_argv("local", name, kind, path, resume, args=args)
+    return _inner(_new_cmd(argv))
 
 
-def test_attach_argv_local_and_remote():
-    local = sessions.attach_argv("local", "shell-main", "shell")
-    assert local[:5] == ["tmux", "new", "-A", "-s", "shell-main"]
-    # scrollback: tmux mouse mode enabled session-scoped on attach, and OSC 52
-    # publishing (set-clipboard) so copy-mode selections reach the browser
-    assert local[5:] == [";", "set-option", "-t", "shell-main", "mouse", "on",
-                         ";", "set-option", "-s", "set-clipboard", "on"]
+def test_create_argv_local_and_remote():
+    # v3 creates detached and attaches separately (control mode), so the user's
+    # tmux options are never touched: no mouse, no set-clipboard.
+    local = sessions.create_argv("local", "shell-main", "shell")
+    assert local == ["tmux", "new", "-d", "-s", "shell-main"]
 
-    remote = sessions.attach_argv("proj-web", "shell-deploy", "shell")
+    remote = sessions.create_argv("proj-web", "shell-deploy", "shell")
     assert remote[0] == "ssh" and remote[-2] == "proj-web"
     assert "BatchMode=yes" in remote  # invariant: agent-only auth
-    assert remote[-1] == ("tmux new -A -s shell-deploy ';' set-option -t shell-deploy mouse on"
-                          " ';' set-option -s set-clipboard on")
+    assert "-t" not in remote         # a detached create needs no tty
+    assert remote[-1] == "tmux new -d -s shell-deploy"
 
 
-def test_attach_argv_mouse_toggle():
-    on = sessions.attach_argv("local", "shell-x", "shell", mouse=True)
-    off = sessions.attach_argv("local", "shell-x", "shell", mouse=False)
-    assert on[-11:-5] == [";", "set-option", "-t", "shell-x", "mouse", "on"]
-    assert off[-11:-5] == [";", "set-option", "-t", "shell-x", "mouse", "off"]
-    # set-clipboard rides along regardless of the mouse toggle
-    assert on[-5:] == off[-5:] == [";", "set-option", "-s", "set-clipboard", "on"]
+def test_create_argv_sizes_the_window_for_the_browser():
+    argv = sessions.create_argv("local", "shell-x", "shell", cols=120, rows=40)
+    assert argv == ["tmux", "new", "-d", "-x", "120", "-y", "40", "-s", "shell-x"]
+    # only both, and only ints
+    assert "-x" not in sessions.create_argv("local", "shell-x", "shell", cols=120)
+    with pytest.raises(ValueError):
+        sessions.create_argv("local", "shell-x", "shell", cols="1;rm", rows=2)
 
 
-def test_attach_argv_history_sets_limit_before_create():
+def test_create_session_runs_from_home_with_a_terminal_env(monkeypatch, tmp_path):
+    """The creating client's env and cwd become the session's (items 0e/0g):
+    never serai's install dir, and a TERM even under systemd."""
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert sessions.create_session(["tmux", "new", "-d", "-s", "x"])
+    assert seen["cwd"] == str(tmp_path)
+    assert seen["env"]["TERM"] == "xterm-256color"
+    assert seen["env"]["COLORTERM"]
+
+
+def test_create_argv_history_sets_limit_before_create():
     # history-limit must be set on the server before `new` (it only applies to a
     # pane at creation); None leaves it untouched.
-    none = sessions.attach_argv("local", "shell-x", "shell")
-    assert none[:5] == ["tmux", "new", "-A", "-s", "shell-x"]
-    h = sessions.attach_argv("local", "shell-x", "shell", history=50000)
+    none = sessions.create_argv("local", "shell-x", "shell")
+    assert none[:5] == ["tmux", "new", "-d", "-s", "shell-x"]
+    h = sessions.create_argv("local", "shell-x", "shell", history=50000)
     assert h[:7] == ["tmux", "set", "-g", "history-limit", "50000", ";", "new"]
     # remote stays argv-safe through shlex.quote
-    rem = sessions.attach_argv("proj-web", "shell-x", "shell", history=50000)[-1]
-    assert rem.startswith("tmux set -g history-limit 50000 ';' new -A -s shell-x")
+    rem = sessions.create_argv("proj-web", "shell-x", "shell", history=50000)[-1]
+    assert rem.startswith("tmux set -g history-limit 50000 ';' new -d -s shell-x")
 
 
-def test_attach_argv_claude_preserves_tilde_and_quotes_spaces():
+def test_create_argv_claude_preserves_tilde_and_quotes_spaces():
     assert _claude_inner("~/git/webapp") == "cd ~/git/webapp && claude"  # tilde stays expandable
     assert _claude_inner("~/my proj") == "cd ~/'my proj' && claude"  # space quoted, tilde free
     assert _claude_inner("/srv/app") == "cd /srv/app && claude"
 
 
-def test_attach_argv_claude_resume_modes():
+def test_create_argv_claude_resume_modes():
     base = "cd ~/git/app && claude"
     av = lambda r: _claude_inner("~/git/app", r)
     assert av("") == base
@@ -600,7 +619,7 @@ def test_attach_argv_claude_resume_modes():
     assert av("; rm -rf ~") == base
 
 
-def test_attach_argv_agent_kinds_run_their_own_command():
+def test_create_argv_agent_kinds_run_their_own_command():
     # grok mirrors claude: its own command, --continue/--resume.
     assert _agent_inner("grok", "grok-api", "~/git/api") == "cd ~/git/api && grok"
     assert _agent_inner("grok", "grok-api", "~/git/api", "continue") == "cd ~/git/api && grok --continue"
@@ -619,7 +638,7 @@ def test_attach_argv_agent_kinds_run_their_own_command():
     assert _agent_inner("grok", "grok-api", "~/git/api", "", "--fast") == "cd ~/git/api && grok --fast"
 
 
-def test_attach_argv_agent_resume_suppressed_by_args():
+def test_create_argv_agent_resume_suppressed_by_args():
     # a session whose args already pick the session wins over the resume dropdown
     assert _agent_inner("grok", "grok-api", "~/git/api", "resume", "--resume") == "cd ~/git/api && grok --resume"
     assert _agent_inner("opencode", "oc-web", "~/git/web", "continue", "--session abc") == "cd ~/git/web && opencode --session abc"
@@ -635,21 +654,20 @@ def test_agent_exit_drops_to_prompt_not_into_a_dead_session():
     tail = sessions._EXIT_SHELL
     assert tail == "; exec ${SHELL:-/bin/sh}"
     # every agent kind, with and without a start dir, ends in the prompt shell
-    av = sessions.attach_argv("local", "oc-web", "opencode")
+    av = sessions.create_argv("local", "oc-web", "opencode")
     assert av[av.index("new") + 4] == "opencode" + tail
-    av = sessions.attach_argv("local", "cc-x", "claude", "~/git/app", "resume", args="--chrome")
+    av = sessions.create_argv("local", "cc-x", "claude", "~/git/app", "resume", args="--chrome")
     assert av[av.index("new") + 4] == "cd ~/git/app && claude --resume --chrome" + tail
     # one tail only -- a start dir must not stack a second exec
     assert av[av.index("new") + 4].count("${SHELL") == 1
     # shells are untouched: a bare new for the no-dir case (tmux's own login
     # shell), and the pre-existing single exec for the start-dir case
-    bare = sessions.attach_argv("local", "shell-main", "shell")
-    assert "new" in bare and "-A" in bare
-    assert bare[bare.index("new") + 4] == ";"          # no command element
-    sh = sessions.attach_argv("local", "shell-x", "shell", "~/git/app")
+    bare = sessions.create_argv("local", "shell-main", "shell")
+    assert bare == ["tmux", "new", "-d", "-s", "shell-main"]   # no command element
+    sh = sessions.create_argv("local", "shell-x", "shell", "~/git/app")
     assert sh[sh.index("new") + 4] == "cd ~/git/app && exec ${SHELL:-/bin/sh}"
     # remote: the whole command is one ssh-side element, single-quoted intact
-    rem = sessions.attach_argv("web1", "hm-app", "hermes", "/srv/app")[-1]
+    rem = sessions.create_argv("web1", "hm-app", "hermes", "/srv/app")[-1]
     assert "'hermes; exec ${SHELL:-/bin/sh}'" in rem or \
         "'cd /srv/app && hermes; exec ${SHELL:-/bin/sh}'" in rem
 
@@ -752,237 +770,6 @@ def test_capture_tail_finds_marker_above_blank_pane_padding():
         assert sessions._state_for("shell", False, None, "bash", marker) == "needs_input"
     finally:
         subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
-
-
-def test_pty_websocket_bridge(monkeypatch):
-    # Swap tmux for an echo program to exercise the bridge itself.
-    monkeypatch.setattr(
-        sessions,
-        "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": [
-            "python3", "-u", "-c",
-            'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
-        ],
-    )
-    client = TestClient(app)
-    with client.websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
-        buf = ""
-
-        def drain(needle, tries=30):
-            nonlocal buf
-            for _ in range(tries):
-                m = ws.receive()
-                if m.get("bytes"):
-                    buf += m["bytes"].decode(errors="replace")
-                elif m.get("text"):
-                    buf += m["text"]
-                if needle in buf:
-                    return True
-            return False
-
-        assert drain("READY")
-        ws.send_bytes(b"hello\n")
-        ws.send_text(json.dumps({"resize": {"rows": 40, "cols": 120}}))
-        assert drain("GOT:hello")
-
-
-def _ws_close_code(monkeypatch, exists):
-    # attach to a program that exits immediately, so the PTY EOFs and _close runs
-    monkeypatch.setattr(sessions, "attach_argv",
-                        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": ["python3", "-u", "-c", "print('bye')"])
-    monkeypatch.setattr(sessions, "session_exists", lambda host, name: exists)
-    with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
-        for _ in range(20):
-            m = ws.receive()
-            if m["type"] == "websocket.close":
-                return m.get("code")
-    return None
-
-
-def test_ws_close_4410_when_session_ended(monkeypatch):
-    # session gone (program exited / killed) -> 4410 so the client won't relaunch
-    assert _ws_close_code(monkeypatch, exists=False) == 4410
-
-
-def test_ws_close_normal_when_session_alive(monkeypatch):
-    # session still alive (detach / blip) -> normal close so the client reattaches
-    assert _ws_close_code(monkeypatch, exists=True) == 1000
-
-
-def test_ws_ping_frame_does_not_reach_the_pty(monkeypatch):
-    """A keepalive ping is a JSON control frame. Bytes go to the PTY; ping must not."""
-    monkeypatch.setattr(
-        sessions,
-        "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": [
-            "python3", "-u", "-c",
-            'import sys; print("READY"); print("GOT:"+sys.stdin.readline().strip())',
-        ],
-    )
-    client = TestClient(app)
-    with client.websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
-        buf = ""
-
-        def drain(needle, tries=30):
-            nonlocal buf
-            for _ in range(tries):
-                m = ws.receive()
-                if m.get("bytes"):
-                    buf += m["bytes"].decode(errors="replace")
-                elif m.get("text"):
-                    try:
-                        if json.loads(m["text"]).get("ping"):
-                            continue
-                    except ValueError:
-                        pass
-                    buf += m["text"]
-                if needle in buf:
-                    return True
-            return False
-
-        assert drain("READY")
-        ws.send_text(json.dumps({"ping": 1}))
-        ws.send_bytes(b"hello\n")
-        assert drain("GOT:hello")
-        assert '{"ping"' not in buf
-
-
-def test_ws_keepalive_sends_ping(monkeypatch):
-    import serai.main as main
-    monkeypatch.setattr(main, "WS_PING_INTERVAL", 0.01)
-    sent = []
-
-    class _FakeWS:
-        async def send_text(self, s):
-            sent.append(s)
-            raise RuntimeError("stop")
-
-    import asyncio
-    asyncio.run(main._ws_keepalive(_FakeWS()))
-    assert sent == ['{"ping":1}']
-
-
-def test_ws_server_sends_keepalive_on_an_idle_attach(monkeypatch):
-    """The ping task is wired into ws_attach, not just the helper."""
-    import serai.main as main
-    monkeypatch.setattr(main, "WS_PING_INTERVAL", 0.05)
-    monkeypatch.setattr(
-        sessions,
-        "attach_argv",
-        lambda host, name, kind, path=None, resume="", mouse=True, history=None, args="", owner="", tags="": [
-            "python3", "-u", "-c",
-            "import sys; print('READY', flush=True); sys.stdin.read()",
-        ],
-    )
-    with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=t") as ws:
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            m = ws.receive()
-            text = m.get("text")
-            if not text:
-                continue
-            try:
-                if json.loads(text).get("ping"):
-                    return
-            except ValueError:
-                continue
-    raise AssertionError("server never sent a keepalive ping")
-
-
-def _spawn_exiting_child() -> int:
-    pid = os.fork()
-    if pid == 0:
-        os._exit(0)
-    return pid
-
-
-def test_reap_collects_tracked_pid_but_never_steals_other_children():
-    """The v2.30.1 drain was waitpid(-1) — under the new always-on timer that
-    would race the thread pool's subprocess.run children and steal their exit
-    status (CPython then reports rc=0 for a failed command). The reaper must
-    collect ONLY the pids pty.fork registered."""
-    import subprocess
-    import sys
-    import serai.main as main
-
-    zombie = _spawn_exiting_child()
-    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.05); raise SystemExit(3)"])
-    try:
-        main._pty_pids.add(zombie)
-        deadline = time.time() + 2.0
-        while zombie in main._pty_pids and time.time() < deadline:
-            main._reap()
-            if zombie in main._pty_pids:
-                time.sleep(0.01)
-        assert zombie not in main._pty_pids          # tracked zombie collected
-        with pytest.raises(ChildProcessError):       # status already taken
-            os.waitpid(zombie, os.WNOHANG)
-        other.wait(timeout=2)
-        assert other.returncode == 3                 # ...and was not stolen
-    finally:
-        main._pty_pids.discard(zombie)
-        if other.poll() is None:
-            other.kill()
-            other.wait(timeout=2)
-
-
-def test_reap_forever_collects_with_no_signal_handler_armed():
-    """The uvloop situation: add_signal_handler(SIGCHLD) is impossible there,
-    so the timer alone must do the job. A plain asyncio.run loop here has no
-    SIGCHLD handler armed at all — same as uvloop in production."""
-    import asyncio
-    import serai.main as main
-
-    async def scenario():
-        zombie = _spawn_exiting_child()
-        main._pty_pids.add(zombie)
-        task = asyncio.ensure_future(main._reap_forever())
-        deadline = time.time() + 2.0
-        while zombie in main._pty_pids and time.time() < deadline:
-            await asyncio.sleep(0.02)
-        task.cancel()
-        return zombie
-
-    orig = main._REAP_INTERVAL
-    main._REAP_INTERVAL = 0.02
-    try:
-        zombie = asyncio.run(scenario())
-    finally:
-        main._REAP_INTERVAL = orig
-    assert zombie not in main._pty_pids
-    try:
-        os.waitpid(zombie, os.WNOHANG)
-    except ChildProcessError:
-        pass  # reaped, as required
-
-
-def test_lifespan_reports_which_reaper_path_armed(monkeypatch, capsys):
-    """Silence was half the bug: 2.30.1 swallowed the uvloop RuntimeError and
-    the service ran its whole lifetime unarmed while looking healthy."""
-    import asyncio
-    import serai.main as main
-
-    monkeypatch.setattr(main.auth, "startup_banner", lambda: None)
-
-    async def enter_exit():
-        async with main._lifespan(main.app):
-            pass
-
-    asyncio.run(enter_exit())
-    out = capsys.readouterr().out
-    assert "zombie reaper armed: timer + SIGCHLD" in out
-
-    async def enter_exit_forced_failure():
-        loop = asyncio.get_running_loop()
-        def boom(sig, handler, *a):
-            raise RuntimeError("cannot add a signal handler for SIGCHLD")
-        monkeypatch.setattr(loop, "add_signal_handler", boom)
-        async with main._lifespan(main.app):
-            pass
-
-    asyncio.run(enter_exit_forced_failure())
-    out = capsys.readouterr().out
-    assert "zombie reaper armed: timer only" in out
 
 
 # --- files.py SFTP path ----------------------------------------------------
@@ -1382,18 +1169,18 @@ def test_rename_and_tags_argv_local_and_remote():
     assert t[-1] == "tmux set-option -t shell-a @serai_tags p,q"
 
 
-def test_attach_argv_start_dir_applies_to_both_kinds():
+def test_create_argv_start_dir_applies_to_both_kinds():
     # a shell can start somewhere too -- it used to ignore the path entirely
-    sh = sessions.attach_argv("local", "shell-x", "shell", "~/git/proj")
+    sh = sessions.create_argv("local", "shell-x", "shell", "~/git/proj")
     assert "cd ~/git/proj && exec ${SHELL:-/bin/sh}" in sh   # ~ stays shell-expandable
-    cc = sessions.attach_argv("local", "cc-x", "claude", "~/git/proj", "continue")
+    cc = sessions.create_argv("local", "cc-x", "claude", "~/git/proj", "continue")
     assert "cd ~/git/proj && claude --continue" + sessions._EXIT_SHELL in cc
     # no path -> plain session, unchanged
-    assert not any("cd " in a for a in sessions.attach_argv("local", "shell-y", "shell"))
+    assert not any("cd " in a for a in sessions.create_argv("local", "shell-y", "shell"))
     # a path with a space survives being quoted twice for the remote shell: the
     # command string round-trips back to the same cd, with ~ left outside the
     # quotes so the remote shell still expands it
-    r = sessions.attach_argv("proj-web", "shell-z", "shell", "~/my dir")
+    r = sessions.create_argv("proj-web", "shell-z", "shell", "~/my dir")
     assert r[0] == "ssh"
     inner = next(a for a in shlex.split(r[-1]) if a.startswith("cd "))
     assert inner == "cd ~/'my dir' && exec ${SHELL:-/bin/sh}"
@@ -2423,90 +2210,6 @@ def test_update_interval_survives_a_save_from_an_unaware_tab(tmp_path, monkeypat
     assert updates.interval() == "daily", "the cadence reverted to the default"
 
 
-# --- scroll_argv -----------------------------------------------------------
-# Touch drag -> an exact line count. The wheel can only land on ~4-line notches
-# (xterm's pixel->notch conversion on top of tmux's default -N 5), which on a
-# phone reads as a lurch; `send-keys -X -N` takes the count directly.
-
-def test_scroll_argv_is_argv_shaped_and_directional():
-    up = sessions.scroll_argv("local", "shell-x", 7)
-    assert up == ["tmux", "copy-mode", "-e", "-t", "shell-x", ";",
-                  "send-keys", "-t", "shell-x", "-X", "-N", "7", "scroll-up"]
-    # negative walks back toward live output
-    assert sessions.scroll_argv("local", "shell-x", -3)[-1] == "scroll-down"
-    assert sessions.scroll_argv("local", "shell-x", -3)[-2] == "3"   # count is magnitude
-
-
-def test_scroll_argv_clamps_the_count():
-    # the count is the only non-literal in the command; a flick must not turn
-    # into an unbounded -N
-    assert sessions.scroll_argv("local", "s", 10 ** 9)[-2] == "500"
-    assert sessions.scroll_argv("local", "s", 0)[-2] == "1"
-
-
-def test_scroll_argv_never_interpolates_a_session_name(tmp_path):
-    """Invariant #3: a hostile name stays one argv element, local and remote."""
-    evil = "; rm -rf ~"
-    local = sessions.scroll_argv("local", evil, 2)
-    assert evil in local                       # present, as a single element
-    assert not any(a.startswith("rm") for a in local)
-    remote = sessions.scroll_argv("web-01", evil, 2)
-    assert remote[0] == "ssh"
-    # the remote side is one quoted string -- the name must be escaped inside it
-    assert shlex.quote(evil) in remote[-1]
-
-
-@requires_tmux
-def test_scroll_argv_actually_scrolls_a_pane(tmp_path):
-    """End to end against real tmux: exact line counts, and -N walks back out."""
-    sock = tempfile.mkdtemp(prefix="serai-sc-", dir="/tmp")   # short: sockets are length-capped
-    env = {**os.environ, "TMUX_TMPDIR": sock}
-    env.pop("TMUX", None); env.pop("TMUX_PANE", None)         # never touch the real server
-    name = "shell-serai-pytest-scroll"
-
-    def tmux(*args, **kw):
-        return subprocess.run(["tmux", *args], env=env, capture_output=True, text=True, **kw)
-
-    try:
-        tmux("new-session", "-d", "-s", name, "-x", "80", "-y", "24")
-        tmux("send-keys", "-t", name,
-             'for i in $(seq 1 200); do echo "line $i"; done', "Enter")
-
-        def hist():
-            r = tmux("display-message", "-p", "-t", name, "#{history_size}")
-            try:
-                return int(r.stdout.strip())
-            except ValueError:
-                return 0
-
-        # Wait for the scrollback to actually exist rather than sleeping a fixed
-        # time -- a loaded CI runner can still be printing the loop at 1.2s, and
-        # there is nothing to scroll until it has (this flaked on 3.12).
-        for _ in range(50):
-            if hist() >= 100:
-                break
-            time.sleep(0.2)
-        assert hist() >= 100, "shell loop never produced scrollback to test against"
-
-        def pos():
-            r = tmux("display-message", "-p", "-t", name, "#{scroll_position}")
-            return r.stdout.strip()
-
-        monkey = sessions.scroll_argv("local", name, 7)
-        subprocess.run(monkey, env=env, capture_output=True, timeout=6)
-        assert pos() == "7", "an exact 7-line scroll is the whole point"
-        subprocess.run(sessions.scroll_argv("local", name, 1), env=env,
-                       capture_output=True, timeout=6)
-        assert pos() == "8", "single-line granularity -- finer than any wheel notch"
-        subprocess.run(sessions.scroll_argv("local", name, -50), env=env,
-                       capture_output=True, timeout=6)
-        r = tmux("display-message", "-p", "-t", name, "#{pane_in_mode}")
-        assert r.stdout.strip() == "0", "scrolling back to the bottom leaves copy mode"
-    finally:
-        tmux("kill-server")
-        shutil.rmtree(sock, ignore_errors=True)
-
-
 # --- self-update apply -----------------------------------------------------
 # The apply path downloads a release, verifies its sha256, and re-runs
 # install.sh over the running install, then restarts. The network + the
@@ -2744,21 +2447,21 @@ def test_claude_session_runs_claude_even_without_a_start_dir():
     and come up as an ordinary *shell* -- one that sat in serai's own working
     directory, which then got snapshotted as that session's dir and poisoned
     every later restore. `claude` must run either way."""
-    argv = sessions.attach_argv("local", "cc-x", "claude")
+    argv = sessions.create_argv("local", "cc-x", "claude")
     assert ("claude" + sessions._EXIT_SHELL) in argv, \
         f"claude session must still launch claude: {argv}"
-    withdir = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj")
+    withdir = sessions.create_argv("local", "cc-x", "claude", path="/tmp/proj")
     assert "cd /tmp/proj && claude" + sessions._EXIT_SHELL in withdir
     # resume flags keep working in both shapes
     assert "claude --resume" + sessions._EXIT_SHELL in \
-        sessions.attach_argv("local", "cc-x", "claude", resume="resume")
+        sessions.create_argv("local", "cc-x", "claude", resume="resume")
 
 
 def test_shell_session_with_no_start_dir_is_unchanged():
     """The bare form is what lets tmux spawn its own login shell; don't regress
     it while fixing the claude case."""
-    argv = sessions.attach_argv("local", "shell-x", "shell")
-    assert argv[:5] == ["tmux", "new", "-A", "-s", "shell-x"]
+    argv = sessions.create_argv("local", "shell-x", "shell")
+    assert argv[:5] == ["tmux", "new", "-d", "-s", "shell-x"]
     assert not any("exec" in a for a in argv)
 
 
@@ -2839,15 +2542,15 @@ def test_clean_args_is_idempotent_and_rejects_the_unparseable():
     assert sessions.clean_args("--include a::b") == "--include a::b"
 
 
-def test_extra_args_reach_claude_in_attach_argv():
-    argv = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj",
+def test_extra_args_reach_claude_in_create_argv():
+    argv = sessions.create_argv("local", "cc-x", "claude", path="/tmp/proj",
                                 resume="resume", args="--chrome")
     assert "cd /tmp/proj && claude --resume --chrome" + sessions._EXIT_SHELL in argv
     assert "claude --chrome" + sessions._EXIT_SHELL in \
-        sessions.attach_argv("local", "cc-x", "claude", args="--chrome")
+        sessions.create_argv("local", "cc-x", "claude", args="--chrome")
     # a shell has no command of ours to carry them, so they're ignored there
     assert not any("--chrome" in a for a in
-                   sessions.attach_argv("local", "shell-x", "shell", args="--chrome"))
+                   sessions.create_argv("local", "shell-x", "shell", args="--chrome"))
 
 
 def test_args_parsed_from_listing_without_shifting_the_path(monkeypatch):
@@ -2970,14 +2673,14 @@ def test_endpoints_refuse_another_users_session(monkeypatch, tmp_path):
 
 
 def test_a_new_session_is_claimed_by_its_creator():
-    """The claim rides in the same tmux command as `new -A`, so nothing can
+    """The claim rides in the same tmux command as `new -d`, so nothing can
     observe the session unowned in between."""
-    argv = sessions.attach_argv("local", "cc-x", "claude", owner="bob")
+    argv = sessions.create_argv("local", "cc-x", "claude", owner="bob")
     joined = " ".join(argv)
     assert "@serai_owner" in joined and "bob" in joined
     assert joined.index("new") < joined.index("@serai_owner"), "claim comes after create"
     # no owner passed (attaching to something that already exists) -> no claim
-    assert "@serai_owner" not in " ".join(sessions.attach_argv("local", "cc-x", "claude"))
+    assert "@serai_owner" not in " ".join(sessions.create_argv("local", "cc-x", "claude"))
     # usernames are sanitised before becoming a tmux option value
     assert sessions.clean_owner("bob; rm -rf ~") == "bobrm-rf"
     assert sessions.clean_owner("a::b") == "ab", "':' is outside the username charset"
@@ -2985,19 +2688,19 @@ def test_a_new_session_is_claimed_by_its_creator():
 
 
 def test_a_new_session_is_tagged_on_create():
-    """Tags ride in the same `new -A` command as the owner claim, so nothing can
+    """Tags ride in the same `new -d` command as the owner claim, so nothing can
     observe the session untagged in between; a re-attach (no tags) never clobbers."""
-    argv = sessions.attach_argv("local", "shell-x", "shell", tags="work, infra")
+    argv = sessions.create_argv("local", "shell-x", "shell", tags="work, infra")
     joined = " ".join(argv)
     assert "@serai_tags" in joined and "work,infra" in joined
     assert joined.index("new") < joined.index("@serai_tags"), "claim comes after create"
     # no tags passed (attaching to something that already exists) -> no claim
-    assert "@serai_tags" not in " ".join(sessions.attach_argv("local", "shell-x", "shell"))
+    assert "@serai_tags" not in " ".join(sessions.create_argv("local", "shell-x", "shell"))
     # hostile input passes through the one parser before it touches a command:
     # the ';' that could become a tmux command separator must not survive
     cleaned = sessions.clean_tags("work; rm -rf ~".split(","))
     assert cleaned == ["work-rm--rf"] and not any(";" in t for t in cleaned)
-    assert "work; rm" not in " ".join(sessions.attach_argv("local", "shell-x", "shell", tags="work; rm -rf ~"))
+    assert "work; rm" not in " ".join(sessions.create_argv("local", "shell-x", "shell", tags="work; rm -rf ~"))
 
 
 def test_upsert_keeps_a_stored_owner_when_a_session_comes_back_bare(tmp_path, monkeypatch):
@@ -3031,7 +2734,7 @@ def test_args_win_over_the_resume_dropdown():
     # ...and a lookalike must not suppress it
     assert sessions.resume_flag("claude", "resume", "--resumable") == " --resume"
     # end to end through the builder
-    assert "claude --chrome" in sessions.attach_argv(
+    assert "claude --chrome" in sessions.create_argv(
         "local", "cc-x", "claude", resume="continue", args="--chrome --resume")[5]
 
 

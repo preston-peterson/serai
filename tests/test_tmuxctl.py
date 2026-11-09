@@ -191,8 +191,9 @@ emit("%begin 1 0 0")
 emit("%end 1 0 0")
 emit("%session-changed $7 demo-1")
 n = 0
-for raw in sys.stdin:
-    line = raw.rstrip("\n")
+def run_one(line):
+    # Reply to one command; False when it failed (ends a multi-command line).
+    global n
     n += 1
     err = False
     body = line  # default: echo the command back as the block body
@@ -214,12 +215,28 @@ for raw in sys.stdin:
         for i in range(count):
             emit(f"%output %3 line-{i}")
         body = "burst"
+    elif line == "spoof":
+        emit(f"%begin {1000 + n} {n} 1")
+        emit("before")
+        emit("%end 1 2 3")            # pane text, not our terminator
+        emit("%error 9 9 9 trailing")
+        emit("after")
+        emit(f"%end {1000 + n} {n} 1")
+        return True
     elif line == "hang":
         emit(f"%begin {1000 + n} {n} 1")
-        continue  # never close the block: the reply simply never arrives
+        return None  # never close the block: the reply simply never arrives
     emit(f"%begin {1000 + n} {n} 1")
     emit(body)
     emit(f"%error {1000 + n} {n} 1" if err else f"%end {1000 + n} {n} 1")
+    return not err
+for raw in sys.stdin:
+    line = raw.rstrip("\n")
+    # Several commands on one line: one block each, and (like tmux) the first
+    # failure ends the line -- nothing after it runs or replies.
+    for part in line.split(" ; "):
+        if not run_one(part):
+            break
 emit("%exit")
 """
 
@@ -509,3 +526,122 @@ def test_closed_needs_running_loop():
     c = ControlClient([sys.executable, "-c", "pass"])
     with pytest.raises(RuntimeError):
         c.closed
+
+
+# --- batches and reply positions -------------------------------------------
+
+
+def test_send_batch_returns_one_reply_per_command_in_order():
+    async def go():
+        c = _client(_fake_argv())
+        await c.start()
+        try:
+            a, b, d = await c.send_batch(("display-message", "-p", "A"),
+                                         ("display-message", "-p", "B"),
+                                         ("display-message", "-p", "C"))
+            assert (a, b, d) == ([b"display-message -p A"], [b"display-message -p B"],
+                                 [b"display-message -p C"])
+            # the FIFO stays aligned for an ordinary command afterwards
+            assert await c.send_command("x") == [b"x"]
+        finally:
+            await c.close()
+    run(go())
+
+
+def test_send_batch_error_ends_the_batch_and_keeps_the_fifo_aligned():
+    async def go():
+        c = _client(_fake_argv())
+        await c.start()
+        try:
+            with pytest.raises(tmuxctl.ControlError):
+                await c.send_batch(("ok1",), ("fail",), ("never-runs",))
+            assert await c.send_command("after") == [b"after"]
+        finally:
+            await c.close()
+    run(go())
+
+
+def test_send_batch_validates_every_argument():
+    async def go():
+        c = _client(_fake_argv())
+        await c.start()
+        try:
+            with pytest.raises(ValueError):
+                await c.send_batch(("ok",), ("bad", "x;y"))
+            with pytest.raises(ValueError):
+                await c.send_batch(("ok",), ())
+            assert await c.send_batch() == []
+        finally:
+            await c.close()
+    run(go())
+
+
+def test_reply_seq_splits_the_stream_around_a_reply():
+    """Output dispatched before a reply has seq <= reply.seq; after it, greater."""
+    async def go():
+        c = _client(_fake_argv())
+        seen = []
+        c.subscribe("output", lambda line: seen.append(c.notify_seq))
+        await c.start()
+        try:
+            r1 = await c.send_command("emit", "41")   # output, then the reply
+            r2 = await c.send_command("emit", "42")
+            assert seen[0] <= r1.seq < seen[1] <= r2.seq
+        finally:
+            await c.close()
+    run(go())
+
+
+def test_send_pane_pipelines_large_input_in_order():
+    async def go():
+        c = _client(_fake_argv())
+        await c.start()
+        sent = []
+        orig = c.send_command
+
+        async def spy(*args):
+            sent.append(args)
+            return await orig(*args)
+        c.send_command = spy
+        try:
+            data = bytes(range(256)) * 200           # 51200 bytes -> 50 chunks
+            await c.send_pane("%3", data)
+            got = bytes.fromhex("".join("".join(a[4:]) for a in sent))
+            assert got == data
+            assert all(a[:4] == ("send-keys", "-H", "-t", "%3") for a in sent)
+        finally:
+            await c.close()
+    run(go())
+
+
+def test_env_reaches_the_child(tmp_path):
+    async def go():
+        script = tmp_path / "envtmux.py"
+        script.write_text(
+            "import os, sys\n"
+            "print('%begin 1 0 0'); print('%end 1 0 0')\n"
+            "print('%session-changed $1 ' + os.environ.get('SERAI_PROBE', 'unset'))\n"
+            "sys.stdout.flush(); sys.stdin.read()\n")
+        env = dict(os.environ, SERAI_PROBE="seen")
+        c = _client([sys.executable, "-u", str(script)], env=env)
+        await c.start()
+        try:
+            assert c.session_name == "seen"
+        finally:
+            await c.close()
+    run(go())
+
+
+def test_pane_text_that_looks_like_a_terminator_stays_in_the_body():
+    """capture-pane bodies are raw pane text: `echo %end` must not end a reply.
+    Only the %end carrying the %begin's own time/num/flags terminates it."""
+    async def go():
+        c = _client(_fake_argv())
+        await c.start()
+        try:
+            assert await c.send_command("spoof") == [
+                b"before", b"%end 1 2 3", b"%error 9 9 9 trailing", b"after"]
+            assert await c.send_command("next") == [b"next"]   # FIFO still aligned
+        finally:
+            await c.close()
+    run(go())

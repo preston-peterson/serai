@@ -13,7 +13,7 @@ strip the prefix for display:
     anything else    -> kind="shell", label = full name
 
 The coding agents (claude/grok/opencode/hermes) are "first-class": each has its own
-prefix, its own command that `attach_argv` runs in the project
+prefix, its own command that `create_argv` runs in the project
 dir, and its own resume-flag mapping. Everything that makes a kind an agent --
 rather than a shell -- is looked up in the `_AGENTS` table below, so adding a
 new agent is a one-line change there plus a row in the UI.
@@ -123,7 +123,7 @@ _MARKERS = _build_markers()
 # "resume" choice maps to a flag on *its own* command line, and the two display
 # fields the UI draws for it (`chip`, the board/rail badge; `glyph`, the icon).
 # Anything not in this table is a shell. This is the single place that makes a
-# kind an agent -- session_name / attach_argv / _state_for all
+# kind an agent -- session_name / create_argv / _state_for all
 # look up here -- and, with SHELL_KIND below and `kinds()`, the single kinds
 # table the frontend is served from (GET /api/kinds) instead of forking its own.
 #
@@ -680,43 +680,39 @@ def resume_flag(kind: str, resume: str, args: str = "") -> str:
     return spec["resume"].get(resume, "")
 
 
-def attach_argv(host: str, name: str, kind: str, path: str | None = None,
-                resume: str = "", mouse: bool = True, history: int | None = None,
-                args: str = "", owner: str = "", tags: str = "") -> list[str]:
-    """Command that attaches to a session, creating it if absent (tmux new -A).
+def create_argv(host: str, name: str, kind: str, path: str | None = None,
+                resume: str = "", history: int | None = None, args: str = "",
+                owner: str = "", tags: str = "", cols: int | None = None,
+                rows: int | None = None) -> list[str]:
+    """Command that creates a detached session (``tmux new -d``).
 
-    Agent sessions launch their own command (`claude` / `grok` / `opencode` / `hermes`) in
-    the given project directory; shells just start an interactive tmux. Everything
-    runs under a local PTY (see main.py), and remote sessions wrap the same tmux
-    command in ssh -t. An agent command ends with `; exec ${SHELL:-/bin/sh}`, so
-    exiting the harness drops the pane back to a shell prompt instead of killing
-    the session (see _EXIT_SHELL).
+    v3 attaches through a control-mode client (``tmuxctl``/``bridge``), so
+    creating and attaching are two steps: this runs once, only when the session
+    does not exist yet, then the bridge attaches. Nothing here needs a tty, so
+    remote is plain ``ssh host 'tmux new -d ...'`` (no ``-t``).
 
-    `tags` is a pre-cleaned, comma-joined tag list (see `clean_tags`) applied only
-    on create -- like `owner`, it rides in the same `new -A` command so nothing ever
-    observes the session untagged, and a re-attach to an existing name (where the
-    caller passes no tags) never clobbers what is already there.
+    Agent sessions launch their own command (`claude` / `grok` / `opencode` /
+    `hermes`) in the given project directory; shells start tmux's own login
+    shell. An agent command ends with `; exec ${SHELL:-/bin/sh}`, so exiting
+    the harness drops the pane back to a shell prompt instead of killing the
+    session (see _EXIT_SHELL).
 
-    `resume` picks how a *new* agent session starts: "" -> new conversation,
+    `owner` and `tags` ride in the same command after `new`, so nothing ever
+    observes the session unowned or untagged in between.
+
+    `resume` picks how a new agent session starts: "" -> new conversation,
     "continue" -> most recent in the dir, "resume" -> the interactive picker (for
-    the agents that have one). The flag is a fixed literal per kind (never client
-    text), so it stays argv-safe; tmux `new -A` only runs the command on create,
-    so reattaching an existing session ignores it.
+    the agents that have one). The flag is a fixed literal per kind (never
+    client text), so it stays argv-safe.
 
-    `mouse` toggles tmux mouse mode for this session so the scroll wheel pages
-    through its scrollback (under tmux the history lives in copy mode, not in
-    xterm.js's buffer). Set explicitly on every attach with `-t <name>` so it's
-    session-scoped -- never touches the user's global tmux config -- and so the
-    toggle takes effect when you re-attach.
+    `history` is the scrollback depth (tmux `history-limit`). It only applies to
+    a pane at creation, so it is set on the server (`set -g`) before `new`.
 
-    `history` is how many lines of scrollback to keep (tmux `history-limit`). It
-    only takes effect for a pane at *creation* and the session doesn't exist yet
-    for a fresh `new`, so it's set on the server (`set -g`) before `new -A`. That
-    means it applies to newly-created sessions (re-attaching keeps the existing
-    pane's history) and nudges the tmux server's global default.
+    `cols`/`rows` create the window at the browser's size, so the program's
+    first frame is drawn for the screen it will be shown on.
 
     The lone ';' elements are tmux command separators (argv-safe; shlex.quote
-    keeps them intact for ssh; the int is stringified so it can't inject).
+    keeps them intact for ssh; ints are stringified so they can't inject).
     """
     tmux_cmd = ["tmux"]
     if history is not None:
@@ -743,11 +739,13 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
         # so _quote_path's expandable ~ works and no tilde reaches tmux itself;
         # a shell then `exec`s so the session behaves like an ordinary login shell.
         run = f"cd {_quote_path(path)} && {run or 'exec ${SHELL:-/bin/sh}'}"
-    tmux_cmd += ["new", "-A", "-s", name] + ([run] if run else [])
+    size = []
+    if cols and rows:
+        size = ["-x", str(int(cols)), "-y", str(int(rows))]
+    tmux_cmd += ["new", "-d", *size, "-s", name] + ([run] if run else [])
 
     # Claim the session for the serai user creating it, in the same command as
-    # the `new -A` so nothing can observe it unowned in between. Only passed when
-    # this attach is what creates the session -- see ws_attach.
+    # the `new` so nothing can observe it unowned in between.
     if owner:
         tmux_cmd += [";", "set-option", "-t", name, "@serai_owner", clean_owner(owner)]
     if tags:
@@ -756,27 +754,50 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
         # within the conservative charset exactly as for owner.
         tmux_cmd += [";", "set-option", "-t", name, "@serai_tags", ",".join(clean_tags(tags.split(",")))]
 
-    tmux_cmd += [";", "set-option", "-t", name, "mouse", "on" if mouse else "off"]
-    # Publish copy-mode selections as OSC 52 (needs the outer terminal's Ms cap;
-    # xterm.js reports xterm-256color, which has it). The web client bridges the
-    # sequence to the browser clipboard, so a plain drag in mouse mode -- which
-    # selects in tmux copy mode and auto-scrolls through the full history --
-    # copies without Shift+drag's one-screen limit. Server-scoped option.
-    tmux_cmd += [";", "set-option", "-s", "set-clipboard", "on"]
-
     if host == "local":
         return tmux_cmd
-    return ["ssh", *_SSH_OPTS, "-t", host, " ".join(shlex.quote(p) for p in tmux_cmd)]
+    return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
+
+
+def client_env() -> dict[str, str]:
+    """Environment for the tmux clients serai runs (create and control attach).
+
+    tmux gives a new session the environment of the client that creates it --
+    us -- so this is what every session's programs see (item 0e). Under systemd
+    there is no TERM; COLORTERM advertises 24-bit colour to the apps, as the PTY
+    bridge always did.
+    """
+    env = dict(os.environ)
+    env.setdefault("TERM", "xterm-256color")
+    env.setdefault("COLORTERM", "truecolor")
+    return env
+
+
+def create_session(argv: list[str], timeout: int = 10) -> bool:
+    """Run a :func:`create_argv` command; True when tmux created the session.
+
+    Runs from the home directory: a session created with no start dir takes
+    its cwd from the creating client, and serai's own working directory is its
+    install tree -- which then got recorded as the session's project dir
+    (item 0g). False is not fatal to the caller: a racing create of the same
+    name fails here and the attach that follows simply finds it.
+    """
+    try:
+        out = subprocess.run(argv, capture_output=True, timeout=timeout,
+                             env=client_env(), cwd=os.path.expanduser("~"))
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return out.returncode == 0
 
 
 def send_keys_argv(host: str, name: str, text: str) -> list[str]:
     """Command that types `text` then Enter into an existing session.
 
     This is the fleet-broadcast primitive: the same line is sent to many
-    sessions at once. Like attach_argv it stays argv-safe -- `--` stops tmux
+    sessions at once. Like create_argv it stays argv-safe -- `--` stops tmux
     option parsing so a command starting with `-` is literal, the (hostile)
     session name and command text are each their own argv element, and remote
-    sends quote every element once for the remote shell. Unlike attach_argv
+    sends quote every element once for the remote shell. Like create_argv
     there is no `ssh -t`: send-keys is a one-shot that needs no tty.
     """
     tmux_cmd = ["tmux", "send-keys", "-t", name, "--", text, "Enter"]
@@ -843,32 +864,6 @@ def set_dir_argv(host: str, name: str, path: str) -> list[str]:
     other builders.
     """
     tmux_cmd = ["tmux", "set-option", "-t", name, "@serai_dir", path]
-    if host == "local":
-        return tmux_cmd
-    return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
-
-
-def scroll_argv(host: str, name: str, lines: int) -> list[str]:
-    """Command that scrolls a session's pane by ``lines`` (positive = back into
-    history, negative = toward live output).
-
-    Why this exists rather than sending a wheel event: the wheel is quantised at
-    roughly four lines per notch by the time it has been through xterm and tmux's
-    default binding, which on a phone reads as a lurch. ``send-keys -X -N`` takes
-    an exact count, so a drag can move one line at a time.
-
-    ``copy-mode -e`` first because ``-X`` commands only apply in copy mode; ``-e``
-    also makes tmux leave copy mode by itself once you scroll back to the bottom,
-    so the pane returns to live output without a separate exit.
-
-    ``lines`` is coerced to a bounded int by the caller *and* here -- it is the
-    only part of this command that isn't a literal, and it must never reach the
-    shell as anything but a number (invariant #3).
-    """
-    count = max(1, min(int(abs(lines)), 500))
-    verb = "scroll-up" if lines > 0 else "scroll-down"
-    tmux_cmd = ["tmux", "copy-mode", "-e", "-t", name, ";",
-                "send-keys", "-t", name, "-X", "-N", str(count), verb]
     if host == "local":
         return tmux_cmd
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]

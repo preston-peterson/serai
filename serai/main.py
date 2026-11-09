@@ -11,14 +11,9 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import os
-import pty
 import re
-import signal
-import struct
-import termios
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -28,7 +23,7 @@ from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisc
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, files, netcfg, sessions, settings, store, updates
+from . import auth, bridge, config, files, netcfg, sessions, settings, store, tmuxctl, updates
 from . import __version__
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -55,71 +50,13 @@ def _current_version() -> str:
     return _ver_cache["v"]
 
 
-# Every pty.fork() child pid we have not yet collected the exit status of
-# (ws_attach). The reaper walks only these — see _reap for why.
-_pty_pids: set[int] = set()
-
-# How often the belt-and-braces timer runs. Zombies cost a PID slot and nothing
-# else, so 5s is plenty; the signal handler (where armable) is immediate.
-_REAP_INTERVAL = 5.0
-
-
-def _reap() -> None:
-    # waitpid *per tracked pid*, never a bare waitpid(-1) drain: this runs on
-    # the event loop while the thread pool runs subprocess.run for tmux calls,
-    # and an unqualified drain steals their exit status (CPython then reports
-    # rc=0 for a child that failed — a tmux command silently "succeeded").
-    for pid in list(_pty_pids):
-        try:
-            done, _ = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            done = pid  # already gone; drop the bookkeeping
-        if done:
-            _pty_pids.discard(pid)
-
-
-async def _reap_forever() -> None:
-    while True:
-        await asyncio.sleep(_REAP_INTERVAL)
-        _reap()
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     auth.startup_banner()  # prints the one-time setup code while no users exist
-
-    # Reap exited PTY children. pty.fork() at ws_attach spawns a tmux client per
-    # attach; SIGTERM on close ends it, but nothing collected its exit status, so
-    # the entry stayed in the PID table forever — one [tmux: client] <defunct>
-    # per attach, growing without bound (2026-09-17 homelab brief: 98 and
-    # counting). v2.30.1 shipped *this* job as a SIGCHLD handler, which was
-    # silently dead in production: uvicorn auto-selects uvloop, and uvloop owns
-    # SIGCHLD for its own subprocess tracking, so add_signal_handler raised
-    # RuntimeError into a best-effort except and the reaper never armed
-    # (2026-10-26 homelab brief: 672 zombies, none reaped all service lifetime).
-    # The timer is the fix — loop-agnostic and independent of handler survival;
-    # the handler stays as an optimisation where it *can* arm, and whichever
-    # path ran is now logged instead of swallowed. Safe with KillMode=process:
-    # waitpid collects only *finished* children — the tmux server and every
-    # live session are untouched (invariant #4).
-    loop = asyncio.get_running_loop()
-    sigchld_armed = False
-    try:
-        loop.add_signal_handler(signal.SIGCHLD, _reap)
-        sigchld_armed = True
-        print("[serai] zombie reaper armed: timer + SIGCHLD")
-    except (NotImplementedError, RuntimeError, ValueError) as exc:
-        # Non-Unix platforms, a non-main-thread loop (uvicorn workers>1), or a
-        # loop that owns SIGCHLD itself (uvloop): the timer alone must suffice.
-        print(f"[serai] zombie reaper armed: timer only "
-              f"(SIGCHLD unavailable: {exc})")
-    reap_task = asyncio.create_task(_reap_forever())
-    try:
-        yield
-    finally:
-        reap_task.cancel()
-        if sigchld_armed:
-            loop.remove_signal_handler(signal.SIGCHLD)
+    # No zombie reaper any more: v2 pty.fork()ed a tmux client per attach and
+    # had to waitpid it itself (the 2.30.x zombie saga). v3's control clients
+    # and creates are asyncio / subprocess.run children, which reap their own.
+    yield
 
 
 app = FastAPI(title="serai", lifespan=_lifespan)
@@ -950,27 +887,56 @@ async def api_upload(host: str = "local", path: str = "", file: UploadFile = Fil
 
 
 # --- terminal attach over websocket ---------------------------------------
+#
+# v3: a tmux control-mode client per attached browser terminal, pumped by
+# serai/bridge.py (see its docstring for the wire protocol). The session is
+# created first, detached, when it doesn't exist; then the control client
+# attaches to it. tmux stays the persistence substrate (invariant #4): closing
+# the socket only ends the control client.
 
-# Keepalive so an idle attach (a TUI waiting for input: no PTY output, no
-# keystrokes) is not dropped by a NAT / browser / idle timeout. Localhost
-# never hits those; a second machine does. ASGI has no protocol ping, so this
-# is a JSON control frame on the same channel as resize. 20s sits under the
-# common 30s/60s idle cuts. 0 disables it (tests).
+# Keepalive so an idle attach (a TUI waiting for input: no output, no
+# keystrokes) is not dropped by a NAT / browser / idle timeout. Localhost never
+# hits those; a second machine does. ASGI has no protocol ping, so this is a
+# JSON control frame. 20s sits under the common 30s/60s idle cuts. 0 disables.
 WS_PING_INTERVAL = 20.0
 
+# Scrollback seeded into the browser when the client doesn't say.
+DEFAULT_HISTORY = 10000
 
-async def _ws_keepalive(ws: WebSocket) -> None:
-    """Send a tiny ping every WS_PING_INTERVAL seconds until the socket dies."""
+
+async def _ws_keepalive(ping) -> None:
+    """Call ``ping()`` every WS_PING_INTERVAL seconds, forever."""
+    while True:
+        await asyncio.sleep(WS_PING_INTERVAL)
+        ping()
+
+
+async def _pump_browser(ws: WebSocket, br: "bridge.Bridge") -> None:
+    """Browser -> tmux until the socket closes. Binary is input for the pane;
+    text is a JSON control frame ({"resize":{...}} or a {"ping":1})."""
+    while True:
+        msg = await ws.receive()
+        if msg["type"] == "websocket.disconnect":
+            return
+        if msg.get("bytes") is not None:
+            await br.input(msg["bytes"])
+            continue
+        if msg.get("text") is None:
+            continue
+        try:
+            payload = json.loads(msg["text"])
+        except ValueError:
+            continue
+        resize = payload.get("resize") if isinstance(payload, dict) else None
+        if isinstance(resize, dict):
+            await br.resize(resize.get("cols"), resize.get("rows"))
+
+
+async def _close_ws(ws: WebSocket, code: int) -> None:
     try:
-        while True:
-            await asyncio.sleep(WS_PING_INTERVAL)
-            await ws.send_text('{"ping":1}')
-    except (WebSocketDisconnect, RuntimeError):
-        return
-
-
-def _set_winsize(fd: int, rows: int, cols: int) -> None:
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        await ws.close(code=code)
+    except RuntimeError:
+        pass  # already closed by the other side
 
 
 @app.websocket("/ws/attach")
@@ -978,7 +944,7 @@ async def ws_attach(ws: WebSocket) -> None:
     await ws.accept()
 
     # The http auth middleware does not see websocket scopes, so gate here:
-    # without a valid session, refuse before forking a PTY into the fleet.
+    # without a valid session, refuse before anything reaches tmux.
     ws_sess = ({"username": None, "admin": True} if not auth.auth_enabled()
                else auth.verify_token(ws.cookies.get(auth.COOKIE)))
     if ws_sess is None:
@@ -986,18 +952,20 @@ async def ws_attach(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    host = ws.query_params.get("host", "local")
-    kind = ws.query_params.get("kind", "shell")
-    label = ws.query_params.get("label", "main")
-    path = ws.query_params.get("path") or None
-    resume = ws.query_params.get("resume", "")
-    mouse = ws.query_params.get("mouse", "1") != "0"  # tmux mouse/scrollback (default on)
+    q = ws.query_params
+    host = q.get("host", "local")
+    kind = q.get("kind", "shell")
+    label = q.get("label", "main")
+    path = q.get("path") or None
+    resume = q.get("resume", "")
     try:
-        history = ws.query_params.get("history")
+        history = q.get("history")
         history = max(0, min(int(history), 1_000_000)) if history else None
     except ValueError:
         history = None  # tmux history-limit (lines of scrollback); None -> leave default
-    name = ws.query_params.get("name") or sessions.session_name(kind, label)
+    cols = bridge.clamp_dim(q.get("cols"), 80)
+    rows = bridge.clamp_dim(q.get("rows"), 24)
+    name = q.get("name") or sessions.session_name(kind, label)
 
     # Refuse hosts that aren't in the ssh config (invariant #3): an arbitrary
     # alias would otherwise reach ssh as a positional arg-injection vector. Close
@@ -1008,183 +976,95 @@ async def ws_attach(ws: WebSocket) -> None:
         return
 
     # Refuse someone else's live session, and claim a new one for whoever made it.
-    # `tmux new -A` would otherwise happily attach to any name that was guessed:
-    # filtering the *list* hides sessions, but only this stops them being opened.
+    # Filtering the *list* hides sessions, but only this stops them being opened.
     # (Still an organisational boundary, not a security one -- see _owns.)
-    _loop = asyncio.get_event_loop()
-    exists = await _loop.run_in_executor(_pool, sessions.session_exists, host, name)
+    loop = asyncio.get_running_loop()
+    exists = await loop.run_in_executor(_pool, sessions.session_exists, host, name)
     claim = ""
     claim_tags = ""
     if exists:
-        if not _owns(ws_sess, await _loop.run_in_executor(_pool, sessions.get_owner, host, name)):
+        if not _owns(ws_sess, await loop.run_in_executor(_pool, sessions.get_owner, host, name)):
             await ws.send_text("\r\n\x1b[31m[serai] that session belongs to another "
                                "user -- refusing to attach\x1b[0m\r\n")
             await ws.close(code=4403)
             return
     else:
         # Only a session this attach *creates* is claimed, and the claim rides in
-        # the same tmux command (after `new -A`) so it can't race the create. An
-        # admin opening an unowned session must not silently take it over.
+        # the same tmux command as the create so it can't race it. An admin
+        # opening an unowned session must not silently take it over.
         claim = sessions.clean_owner(ws_sess.get("username") or "")
-        # Tags from the + New form ride the create, same race-free shape as the
-        # claim; a re-attach to an existing name passes no tags, so its tags are
-        # never clobbered. clean_tags is the one parser for hostile input.
-        claim_tags = ",".join(sessions.clean_tags((ws.query_params.get("tags") or "").split(",")))
+        # Tags from the + New form ride the create the same way; a re-attach to
+        # an existing name passes none, so its tags are never clobbered.
+        claim_tags = ",".join(sessions.clean_tags((q.get("tags") or "").split(",")))
 
     # Remember an explicit start dir on the session itself, so the file pane and a
-    # post-reboot restore keep using it even after the shell cds elsewhere. Best
-    # effort: tmux `new -A` only applies it on create, and a failure here must
-    # never stop the attach.
+    # later recreate keep using it even after the shell cds elsewhere. Best
+    # effort: it must never stop the attach.
     if path:
         try:
-            asyncio.get_event_loop().run_in_executor(
+            loop.run_in_executor(
                 _pool, sessions.run_send, sessions.set_dir_argv(host, name, sessions.clean_dir(path)))
         except ValueError:
             pass
 
-    # Extra agent args, same deal: remembered on the session so a restore or a
-    # later recreate keeps them. clean_args quotes every token, so nothing typed
-    # here reaches the shell unquoted (invariant #3); an unparseable value is
-    # dropped rather than guessed at, since an attach must not fail on it.
+    # Extra agent args, same deal. clean_args quotes every token, so nothing
+    # typed here reaches the shell unquoted (invariant #3); an unparseable value
+    # is dropped rather than guessed at, since an attach must not fail on it.
     try:
-        extra = sessions.clean_args(ws.query_params.get("args") or "")
+        extra = sessions.clean_args(q.get("args") or "")
     except ValueError:
         extra = ""
     if extra:
-        asyncio.get_event_loop().run_in_executor(
-            _pool, sessions.run_send, sessions.set_args_argv(host, name, extra))
+        loop.run_in_executor(_pool, sessions.run_send, sessions.set_args_argv(host, name, extra))
 
-    argv = sessions.attach_argv(host, name, kind, path, resume, mouse, history, extra, claim, claim_tags)
+    if not exists:
+        argv = sessions.create_argv(host, name, kind, path, resume, history, extra,
+                                    claim, claim_tags, cols, rows)
+        # A False here is usually a racing create of the same name (another tab):
+        # the attach below finds it. A real failure shows up as the attach failing.
+        await loop.run_in_executor(_pool, sessions.create_session, argv)
 
-    pid, master_fd = pty.fork()
-    if pid == 0:  # child -> become the ssh/tmux process
-        # The display is xterm.js, so advertise that terminal type. Without it,
-        # tmux inherits whatever TERM serai was launched with -- and under
-        # systemd there is none, which makes tmux abort with "open terminal
-        # failed: terminal does not support clear". Forcing it here makes attach
-        # work the same from a shell or a service (ssh -t forwards TERM, so this
-        # fixes remote tmux too). COLORTERM enables 24-bit color in apps.
-        os.environ["TERM"] = "xterm-256color"
-        os.environ.setdefault("COLORTERM", "truecolor")
-        # Don't hand serai's own working directory to tmux. A session created
-        # with no start dir takes its cwd from the client -- us -- and would
-        # otherwise open *inside serai's install tree*, which then got recorded
-        # as that session's project dir. Home is the sane default; an explicit
-        # start dir is applied by attach_argv itself.
-        try:
-            os.chdir(os.path.expanduser("~"))
-        except OSError:
-            pass
-        os.execvp(argv[0], argv)
-        os._exit(1)
-
-    # Bookkeep for the reaper: this exact pid must eventually be waitpid'd,
-    # however this attach ends (see _reap_forever / the 2026-10-26 brief).
-    _pty_pids.add(pid)
-
-    loop = asyncio.get_event_loop()
-    # Non-blocking so a TUI that doesn't drain stdin (paste it doesn't
-    # understand, a stuck CSI parse) can't freeze the event loop on os.write
-    # — which is "paste, then typing dies".
-    os.set_blocking(master_fd, False)
-    write_buf = bytearray()
-    watching_write = False
-
-    def _on_readable() -> None:
-        try:
-            data = os.read(master_fd, 65536)
-        except BlockingIOError:
-            return
-        except OSError:
-            data = b""
-        if not data:
-            loop.remove_reader(master_fd)
-            asyncio.ensure_future(_close())
-            return
-        asyncio.ensure_future(ws.send_bytes(data))
-
-    def _flush_write() -> None:
-        nonlocal watching_write
-        while write_buf:
-            try:
-                n = os.write(master_fd, write_buf)
-            except BlockingIOError:
-                break
-            except OSError:
-                write_buf.clear()
-                break
-            del write_buf[:n]
-        if write_buf and not watching_write:
-            loop.add_writer(master_fd, _flush_write)
-            watching_write = True
-        elif not write_buf and watching_write:
-            loop.remove_writer(master_fd)
-            watching_write = False
-
-    async def _close() -> None:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        # The PTY (tmux/ssh client) exited. If the tmux session is gone -- the
-        # program exited (e.g. claude /exit) or it was killed -- close with a
-        # distinct code so the client does NOT auto-reattach (which would re-run
-        # attach_argv and recreate the session). If the session is still alive
-        # (a detach or network blip), close normally so the client reattaches.
+    client = tmuxctl.ControlClient(tmuxctl.control_argv(host, name), env=sessions.client_env())
+    br = bridge.Bridge(client, ws.send_bytes, ws.send_text, cols=cols, rows=rows,
+                       history=DEFAULT_HISTORY if history is None else history)
+    try:
+        await client.start()
+        await br.start()
+    except (tmuxctl.ControlClosed, tmuxctl.ControlError, ValueError) as exc:
+        br.close()
+        await client.close()
         alive = await loop.run_in_executor(_pool, sessions.session_exists, host, name)
         try:
-            await ws.close(code=1000 if alive else 4410)
+            await ws.send_text(json.dumps({"error": f"could not attach to {name}: {exc}"}))
         except RuntimeError:
             pass
+        # Gone -> 4410 so the client does not recreate it in a loop; alive but
+        # unattachable (ssh trouble) -> 1011, which the client retries with backoff.
+        await _close_ws(ws, 1011 if alive else 4410)
+        return
 
-    loop.add_reader(master_fd, _on_readable)
-
-    ping_task = (asyncio.create_task(_ws_keepalive(ws))
-                 if WS_PING_INTERVAL > 0 else None)
+    tasks = [asyncio.create_task(br.writer()), asyncio.create_task(br.maintain()),
+             asyncio.create_task(_pump_browser(ws, br))]
+    if WS_PING_INTERVAL > 0:
+        tasks.append(asyncio.create_task(_ws_keepalive(br.ping)))
+    tmux_gone = client.closed   # the client's own future; close() resolves it
     try:
-        while True:
-            msg = await ws.receive()
-            if msg["type"] == "websocket.disconnect":
-                break
-            if msg.get("bytes") is not None:
-                write_buf.extend(msg["bytes"])
-                _flush_write()
-            elif msg.get("text") is not None:
-                # control frames: {"resize": {"rows": R, "cols": C}}
-                #                 {"scroll": {"lines": N}}   (+ back, - forward)
-                #                 {"ping": 1}                (keepalive; no-op)
-                try:
-                    payload = json.loads(msg["text"])
-                except ValueError:
-                    continue
-                resize = payload.get("resize")
-                if resize:
-                    _set_winsize(master_fd, int(resize["rows"]), int(resize["cols"]))
-                scroll = payload.get("scroll")
-                if scroll:
-                    # Touch drag -> an exact line count, which the wheel can't
-                    # express (it lands on ~4-line notches). Runs off-loop: a
-                    # slow tmux or ssh must not stall the PTY pump feeding the
-                    # terminal. Best effort -- a dropped scroll is a lost gesture,
-                    # never a broken session.
-                    try:
-                        lines = int(scroll.get("lines", 0))
-                    except (TypeError, ValueError):
-                        continue
-                    if lines:
-                        loop.run_in_executor(
-                            _pool, sessions.run_send,
-                            sessions.scroll_argv(host, name, lines))
-    except WebSocketDisconnect:
-        pass
+        done, _ = await asyncio.wait([tmux_gone, *tasks], return_when=asyncio.FIRST_COMPLETED)
+        for t in done:
+            if t is not tmux_gone and not t.cancelled() and t.exception() is not None:
+                exc = t.exception()
+                if not isinstance(exc, (WebSocketDisconnect, tmuxctl.ControlClosed, RuntimeError)):
+                    print(f"[serai] attach {name}: {type(exc).__name__}: {exc}")
     finally:
-        if ping_task is not None:
-            ping_task.cancel()
-        if watching_write:
-            loop.remove_writer(master_fd)
-        loop.remove_reader(master_fd)
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        os.close(master_fd)
+        for t in tasks:
+            t.cancel()
+        br.close()
+        await client.close()
+    if tmux_gone in done:
+        # The control client ended on tmux's side. Session gone (the program
+        # exited, it was killed, or tmux moved us off it) -> 4410 so the client
+        # does NOT auto-reattach, which would recreate it. Still alive (ssh
+        # dropped) -> a normal close, and the client reattaches.
+        alive = (br.ended is None and
+                 await loop.run_in_executor(_pool, sessions.session_exists, host, name))
+        await _close_ws(ws, 1000 if alive else 4410)
