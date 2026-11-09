@@ -211,3 +211,8 @@ button.avatar { padding: 0; cursor: pointer; }
 body.dense-comfortable .row{padding:10px 8px}
 button.switch{border:0;padding:0}
 .note a{color:var(--accent)}
+
+/* account */
+.tab .badge{margin-left:6px;font:.66rem var(--mono);border:1px solid var(--border-st);border-radius:4px;padding:0 4px;color:var(--text-faint)}
+.addrow{display:flex;gap:8px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.addrow .input{width:auto;flex:1}
