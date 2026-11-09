@@ -277,6 +277,7 @@ export class Pane {
       }
       if (code === 4404) { this.term.write(`\r\n\x1b[31m[serai] ${t.host} is not in your ssh config\x1b[0m\r\n`); return; }
       if (code === 4403) { this.term.write("\r\n\x1b[31m[serai] that session belongs to another user\x1b[0m\r\n"); return; }
+      if (code === 4400) return;   // invalid session name: the server already said so; retrying can't help
       if (code === 4401) {
         this.term.write("\r\n\x1b[33m[signed out -- sign in again to reattach]\x1b[0m\r\n");
         window.dispatchEvent(new CustomEvent("serai:auth", { detail: { then: () => gen === this.gen && this.connect(gen) } }));

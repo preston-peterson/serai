@@ -129,7 +129,7 @@ async def _target(request: Request) -> tuple[dict, str, str] | JSONResponse:
         return JSONResponse({"error": "invalid target"}, status_code=400)
     host = body.get("host", "local")
     name = body.get("name")
-    if host not in _known_hosts() or not isinstance(name, str) or not name:
+    if host not in _known_hosts() or not sessions.valid_name(name):
         return JSONResponse({"error": "invalid target"}, status_code=400)
     if not await _may_touch(_session(request), host, name):
         return JSONResponse({"error": "not your session"}, status_code=403)

@@ -704,6 +704,20 @@ def _quote_path(path: str) -> str:
     return shlex.quote(path)
 
 
+def valid_name(name) -> bool:
+    """Whether a client-supplied session name may reach a tmux command.
+
+    Names travel as argv (or shlex-quoted for a remote shell), so a shell can
+    never act on them -- but tmux itself ends a command at an argument that
+    ends in ``;``, so ``x;`` would split the create command in two. Control
+    characters would corrupt the line-based listing. Anything else is a name
+    tmux could have made, so a session created outside serai stays reachable.
+    """
+    return (isinstance(name, str) and 0 < len(name) <= 256
+            and not name.endswith(";")
+            and not any(ord(c) < 32 or ord(c) == 127 for c in name))
+
+
 def session_name(kind: str, label: str) -> str:
     """Build a conventional session name from a kind + label. An agent kind gets
     its own storage prefix (cc- / grok- / oc- / hm-); anything else is a shell."""

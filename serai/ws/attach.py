@@ -118,6 +118,11 @@ async def ws_attach(ws: WebSocket) -> None:
         await ws.send_text("\r\n\x1b[31m[serai] unknown host -- refusing to attach\x1b[0m\r\n")
         await ws.close(code=4404)
         return
+    # A name ending in ';' would split the tmux create command (see valid_name).
+    if not sessions.valid_name(name):
+        await ws.send_text("\r\n\x1b[31m[serai] invalid session name -- refusing to attach\x1b[0m\r\n")
+        await ws.close(code=4400)
+        return
 
     # Refuse someone else's live session, and claim a new one for whoever made it.
     # Filtering the *list* hides sessions, but only this stops them being opened.

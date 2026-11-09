@@ -1160,6 +1160,34 @@ def test_ws_attach_rejects_unknown_host(monkeypatch):
     assert code == 4404  # distinct code the client keys off to show a clean error
 
 
+def test_ws_attach_rejects_a_name_tmux_would_split(monkeypatch):
+    """An argv element ending in ';' ends a tmux command, so 'x;' would split
+    the create in two. Refused before any tmux call, with its own close code."""
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    calls = []
+    monkeypatch.setattr("serai.ws.attach.sessions.session_state",
+                        lambda h, n: calls.append(n) or False)
+    client = TestClient(app)
+    with client.websocket_connect("/ws/attach?host=local&name=shell-x%3B") as ws:
+        got, code = "", None
+        for _ in range(5):
+            m = ws.receive()
+            if m.get("text"):
+                got += m["text"]
+            if m["type"] == "websocket.close":
+                code = m.get("code")
+                break
+    assert "invalid session name" in got.lower()
+    assert code == 4400 and calls == []
+
+
+def test_valid_name():
+    ok = ["shell-main", "cc-web.app", "oc-x_y", "grok-a b", "hm-;mid"]
+    bad = ["", None, 42, "x;", "a\nb", "a\x1fb", "x" * 257]
+    assert all(sessions.valid_name(n) for n in ok)
+    assert not any(sessions.valid_name(n) for n in bad)
+
+
 # --- host reachability -----------------------------------------------------
 
 def test_tcp_reachable_true_for_open_port_false_for_closed():
@@ -3261,6 +3289,9 @@ def test_target_rejects_a_bad_body_or_name(monkeypatch, tmp_path, path, extra):
         "empty name": {"host": "local", "name": ""},
         "null name": {"host": "local", "name": None},
         "non-string name": {"host": "local", "name": 42},
+        # tmux ends a command at an argv element ending in ';'
+        "name ending in ;": {"host": "local", "name": "shell-x;"},
+        "control char in name": {"host": "local", "name": "shell-x\ny"},
     }
     for why, payload in bodies.items():
         # a non-object body carries no per-route extras -- it *is* the fault

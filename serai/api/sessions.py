@@ -219,7 +219,13 @@ async def api_relaunch(request: Request) -> JSONResponse:
     profile = await loop.run_in_executor(_pool, store.get, host, name) or {}
     if mode is None:
         mode = store.effective_launch({**profile, "kind": live.kind})
-    args = live.args or profile.get("args") or ""
+    # These are typed into a live shell, so re-clean them here rather than trust
+    # every writer of @serai_args / the profile to have. Idempotent on a value
+    # clean_args already produced, so a normal relaunch is unchanged.
+    try:
+        args = sessions.clean_args(live.args or profile.get("args") or "")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     flag = sessions.resume_flag(live.kind, "" if mode == "new" else mode, args)
     command = f"{spec['cmd']}{flag}" + (f" {args}" if args else "")
     ok = await loop.run_in_executor(_pool, sessions.run_send,
