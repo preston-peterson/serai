@@ -7,6 +7,7 @@ import { get } from "./core/api.js";
 import * as store from "./core/state.js";
 import { isOpen as dialogOpen } from "./core/dialog.js";
 import { requireAuth } from "./features/login.js";
+import { pullSettings } from "./core/prefs.js";
 import * as account from "./features/account.js";
 import * as board from "./features/board.js";
 import * as files from "./features/files.js";
@@ -54,6 +55,7 @@ document.addEventListener("keydown", (e) => {
 
 async function boot() {
   await requireAuth();
+  await pullSettings();                      // synced prefs (and a one-time v2 import) before any view draws
   try { store.set({ kinds: await get("/api/kinds") }); } catch { /* the rail falls back to shell chips */ }
   topbar.mount(document.getElementById("topbar"));
   rail.mount(document.getElementById("rail"));
