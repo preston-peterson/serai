@@ -1557,9 +1557,18 @@ def test_users_admin_crud_and_guards(auth_on):
     assert bob.get("/api/users").status_code == 403
     assert bob.post("/api/users", json={"username": "x", "password": "longenough"}).status_code == 403
 
-    # bob may change his own password but not alice's
-    assert bob.post("/api/users/bob/password", json={"password": "newlongpass"}).status_code == 200
+    # bob may change his own password -- with the current one -- but not alice's
+    assert bob.post("/api/users/bob/password", json={"password": "newlongpass"}).status_code == 403
+    assert bob.post("/api/users/bob/password",
+                    json={"password": "newlongpass", "current": "wrongpass"}).status_code == 403
+    assert bob.post("/api/users/bob/password",
+                    json={"password": "newlongpass", "current": "longenough"}).status_code == 200
+    assert auth.verify_credentials("bob", "newlongpass")
     assert bob.post("/api/users/alice/password", json={"password": "newlongpass"}).status_code == 403
+    # an admin resetting someone else needs no current password (a reset is the point)
+    assert admin.post("/api/users/bob/password", json={"password": "resetlongpw"}).status_code == 200
+    # ...but an admin changing their own does
+    assert admin.post("/api/users/alice/password", json={"password": "anotherlongpw"}).status_code == 403
 
     # lockout guards
     assert admin.delete("/api/users/alice").status_code == 400   # can't remove self

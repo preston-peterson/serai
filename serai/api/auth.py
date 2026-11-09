@@ -139,15 +139,24 @@ async def api_users_remove(username: str, request: Request) -> JSONResponse:
 
 @router.post("/api/users/{username}/password")
 async def api_users_password(username: str, request: Request) -> JSONResponse:
-    """Reset a password. Admins may reset anyone; a user may change their own."""
+    """Set a password. Admins may reset anyone else's; changing your *own*
+    (admin or not) needs the current one in ``current``, so a session cookie
+    left in an unattended browser is not enough to take the account over."""
     sess = common._session(request)
     if not sess:
         return JSONResponse({"error": "auth required"}, status_code=401)
-    if not (sess["admin"] or username == sess["username"]):
+    own = username == sess["username"]
+    if not (sess["admin"] or own):
         return JSONResponse({"error": "not allowed"}, status_code=403)
     body = await request.json()
     password = body.get("password") or ""
     loop = asyncio.get_event_loop()
+    if own:
+        current = body.get("current")
+        ok = isinstance(current, str) and await loop.run_in_executor(
+            _pool, auth.verify_credentials, username, current)
+        if not ok:
+            return JSONResponse({"error": "your current password is not right"}, status_code=403)
     try:
         await loop.run_in_executor(_pool, auth.set_password, username, password)
     except ValueError as exc:
