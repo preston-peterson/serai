@@ -161,6 +161,42 @@ def test_session_name_convention():
     assert sessions.session_name("claude", "my project!/v2") == "cc-my-project--v2"
 
 
+def test_kinds_table_serves_every_kind_from_one_source():
+    ks = sessions.kinds()
+    assert [k["kind"] for k in ks] == ["shell", "claude", "grok", "opencode", "hermes"]
+    assert len(ks) == 5                                  # shell + all four agents
+    assert [k["agent"] for k in ks] == [False, True, True, True, True]
+    by = {k["kind"]: k for k in ks}
+
+    # the prefix the UI builds a name from is the one session_name() actually uses
+    for kind, k in by.items():
+        assert k["prefix"] == sessions.session_name(kind, "label").removesuffix("label")
+
+    assert {k["chip"] for k in ks} == {"sh", "cc", "gr", "oc", "hm"}
+    assert {k["glyph"] for k in ks} == {"❯", "✦", "●", "▲", "■"}
+
+    assert by["shell"]["cmd"] is None and by["shell"]["resume"] == {}
+    for kind in sessions.AGENT_KINDS:
+        assert by[kind]["cmd"] == kind
+        assert set(by[kind]["resume"]) == {"continue", "resume"}
+        # served as data, so no argv-glue space -- but resume_flag() still emits
+        # the space-prefixed literal it appends to a command line.
+        for choice, flag in by[kind]["resume"].items():
+            assert not flag.startswith(" ")
+            assert flag == sessions.resume_flag(kind, choice).strip()
+    assert by["claude"]["resume"] == {"continue": "--continue", "resume": "--resume"}
+    # no interactive picker for these two: "resume" falls back to --continue
+    assert by["opencode"]["resume"] == {"continue": "--continue", "resume": "--continue"}
+    assert by["hermes"]["resume"] == {"continue": "--continue", "resume": "--continue"}
+
+
+def test_api_kinds_returns_the_table():
+    c = TestClient(app)  # SERAI_AUTH=off -> gated routes are open
+    r = c.get("/api/kinds")
+    assert r.status_code == 200
+    assert r.json() == sessions.kinds()                  # the same list, not a copy
+
+
 def test_list_sessions_caches_remote_within_ttl(monkeypatch):
     # Swap real discovery for a counter so we can see exactly when it runs.
     sessions.clear_cache()
@@ -1610,6 +1646,18 @@ def test_api_blocked_without_session(auth_on):
     c = TestClient(app)
     c.post("/api/login", json={"username": "alice", "password": "longenough"})
     assert c.get("/api/sessions").status_code != 401       # cookie now lets it through
+
+
+def test_kinds_api_requires_session(auth_on):
+    """The kinds table isn't secret, but it's part of the app behind the login,
+    exactly like every other /api/* route -- no cookie, no answer."""
+    auth.add_user("alice", "longenough", admin=True)
+    assert TestClient(app).get("/api/kinds").status_code == 401
+
+    c = TestClient(app)
+    c.post("/api/login", json={"username": "alice", "password": "longenough"})
+    assert c.get("/api/kinds").status_code == 200
+    assert c.get("/api/kinds").json() == sessions.kinds()
 
 
 def test_users_admin_crud_and_guards(auth_on):

@@ -119,23 +119,58 @@ _MARKERS = _build_markers()
 
 
 # The coding-agent kinds that run their own full-screen TUI in a project dir.
-# Each carries its own command, its own naming prefix (invariant #5), and how
-# each "resume" choice maps to a flag on *its own* command line. Anything not in
-# this table is a shell. This is the single place that makes a kind an agent --
-# session_name / attach_argv / restore_argv / _state_for all look up here.
+# Each carries its own command, its own naming prefix (invariant #5), how each
+# "resume" choice maps to a flag on *its own* command line, and the two display
+# fields the UI draws for it (`chip`, the board/rail badge; `glyph`, the icon).
+# Anything not in this table is a shell. This is the single place that makes a
+# kind an agent -- session_name / attach_argv / restore_argv / _state_for all
+# look up here -- and, with SHELL_KIND below and `kinds()`, the single kinds
+# table the frontend is served from (GET /api/kinds) instead of forking its own.
 #
 # Resume flags are fixed literals (never client text), so they stay argv-safe.
+# They keep the leading space that glues them onto a command line; `kinds()`
+# strips it for the API, where the value is data rather than a shell fragment.
 # opencode has no `--resume` picker -- `--continue` picks up its last session,
 # so "resume" falls back to that rather than dropping the user's intent.
 # hermes's `--resume` takes a session id/title/'latest' (no interactive picker
 # like claude/grok), so "resume" falls back to `--continue` the same way.
 _AGENTS = {
-    "claude":   {"cmd": "claude",   "prefix": "cc-",   "resume": {"continue": " --continue", "resume": " --resume"}},
-    "grok":     {"cmd": "grok",     "prefix": "grok-", "resume": {"continue": " --continue", "resume": " --resume"}},
-    "opencode": {"cmd": "opencode", "prefix": "oc-",   "resume": {"continue": " --continue", "resume": " --continue"}},
-    "hermes":   {"cmd": "hermes",   "prefix": "hm-",   "resume": {"continue": " --continue", "resume": " --continue"}},
+    "claude":   {"cmd": "claude",   "prefix": "cc-",   "chip": "cc", "glyph": "✦", "resume": {"continue": " --continue", "resume": " --resume"}},
+    "grok":     {"cmd": "grok",     "prefix": "grok-", "chip": "gr", "glyph": "●", "resume": {"continue": " --continue", "resume": " --resume"}},
+    "opencode": {"cmd": "opencode", "prefix": "oc-",   "chip": "oc", "glyph": "▲", "resume": {"continue": " --continue", "resume": " --continue"}},
+    "hermes":   {"cmd": "hermes",   "prefix": "hm-",   "chip": "hm", "glyph": "■", "resume": {"continue": " --continue", "resume": " --continue"}},
 }
 AGENT_KINDS = frozenset(_AGENTS)
+
+# The fifth kind, and the default: a plain login shell. It has no command of
+# ours to run (`cmd` is None, which is how the UI distinguishes it), but it is
+# still a kind with a prefix, a badge and an icon, so it belongs in the served
+# table rather than only in the frontend.
+SHELL_KIND = {"cmd": None, "prefix": "shell-", "chip": "sh", "glyph": "❯"}
+
+
+def kinds() -> list[dict]:
+    """Every session kind, for the UI: shell first, then the agents in _AGENTS order.
+
+    The server-side mirror of the table the frontend used to carry its own copy
+    of. `resume` is offered as `{choice: flag}` with the argv-glue space stripped
+    -- here the flag is data to display, not text to append to a command line, so
+    the leading space belongs to `resume_flag()`, not to this output.
+    """
+    out = [{
+        "kind": "shell", "agent": False, "cmd": SHELL_KIND["cmd"],
+        "prefix": SHELL_KIND["prefix"], "chip": SHELL_KIND["chip"],
+        "glyph": SHELL_KIND["glyph"], "resume": {},
+    }]
+    for kind, spec in _AGENTS.items():
+        out.append({
+            "kind": kind, "agent": True, "cmd": spec["cmd"],
+            "prefix": spec["prefix"], "chip": spec["chip"],
+            "glyph": spec["glyph"],
+            "resume": {c: f.removeprefix(" ") for c, f in spec["resume"].items()},
+        })
+    return out
+
 
 # A "working" signal read from the pane's *content*, per agent kind. A Claude TUI
 # shows "esc to interrupt" while a turn is actively running; that is the reliable

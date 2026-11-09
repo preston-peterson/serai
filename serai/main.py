@@ -555,6 +555,15 @@ async def api_hosts_add(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "host": host.as_dict()})
 
 
+@app.get("/api/kinds")
+async def api_kinds() -> JSONResponse:
+    """The session-kinds table (shell + every coding agent), straight from
+    `sessions.kinds()` -- cmd, prefix, chip, glyph and resume flags in one place,
+    so the UI doesn't keep a second copy of its own. Read-only and tiny; the
+    ordering it returns is the ordering the UI should render."""
+    return JSONResponse(sessions.kinds())
+
+
 @app.get("/api/sessions")
 async def api_sessions(request: Request) -> JSONResponse:
     """Enumerate live sessions on local + every configured host, concurrently."""
