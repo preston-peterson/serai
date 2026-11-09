@@ -101,12 +101,15 @@ function persist() {
 }
 
 /** Open a session. where: "focused" (default) | "second". If it is already
- *  showing in a pane, that pane just takes focus. */
+ *  showing in a pane, that pane takes focus -- and, with target.fresh (after
+ *  a restart, which ended the old instance), reattaches in place. */
 export function open(target, where = "focused") {
   const showing = panes.find((p) => p.isAttachedTo(target.host, target.name));
-  if (showing && !target.fresh) {
+  if (showing) {
+    if (target.fresh) showing.attach(target);
     setFocus(showing);
     showing.focus();
+    persist();
     return showing;
   }
   let p;
