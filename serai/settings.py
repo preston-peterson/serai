@@ -7,9 +7,10 @@ on load. This stores only UI preferences -- never credentials, hosts, or keys
 (those still come from the ssh-agent and ~/.ssh/config), so the "stores no
 credentials" guarantee holds.
 
-One JSON file, single operator, last-write-wins. Path:
-  $SERAI_SETTINGS, else $XDG_CONFIG_HOME/serai/settings.json, else
-  ~/.config/serai/settings.json.
+One JSON file, single operator, last-write-wins. It lives in serai's one config
+dir (see serai.paths), with its own ``SERAI_SETTINGS`` override for the file:
+  $SERAI_SETTINGS, else $SERAI_CONFIG_DIR/settings.json, else
+  $XDG_CONFIG_HOME/serai/settings.json, else ~/.config/serai/settings.json.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ import json
 import os
 import threading
 from pathlib import Path
+
+from . import paths
 
 # Serialises read-modify-write in merge(); two tabs saving at once would
 # otherwise interleave load and save and lose one of the writes.
@@ -28,8 +31,7 @@ def _path() -> Path:
     override = os.environ.get("SERAI_SETTINGS")
     if override:
         return Path(override)
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "serai" / "settings.json"
+    return paths.config_dir() / "settings.json"
 
 
 def load() -> dict:
@@ -42,12 +44,9 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
-    """Write the settings dict atomically (temp file + rename)."""
-    path = _path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    """Write the settings dict atomically. 0644 as before: UI preferences, not
+    credentials (the invariant-1 guarantee is that nothing sensitive is here)."""
+    paths.atomic_write(_path(), json.dumps(data, indent=2), 0o644)
 
 
 def merge(patch: dict) -> dict:

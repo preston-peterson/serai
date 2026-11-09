@@ -12,10 +12,10 @@ descriptors only, never credentials (invariant #1).
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
 from pathlib import Path
+
+from . import paths
 
 # the descriptor kept per session -- enough to recreate it, nothing sensitive.
 # `favorite` is store-side only: it is never read from a live session (it is not a
@@ -33,16 +33,8 @@ _live_now: set[str] = set()         # keys live as of the most recent mark_live
 _RESUME_WINDOW = 6 * 3600.0
 
 
-def _config_dir() -> Path:
-    override = os.environ.get("SERAI_CONFIG_DIR")
-    if override:
-        return Path(override)
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "serai"
-
-
 def _path() -> Path:
-    return _config_dir() / "sessions.json"
+    return paths.config_dir() / "sessions.json"
 
 
 def _key(host: str, name: str) -> str:
@@ -60,27 +52,16 @@ def _is_self_dir(path: str) -> bool:
 
 def _load() -> dict:
     try:
-        data = json.loads(_path().read_text())
+        data = json.loads(_path().read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def _atomic_write(data: dict) -> None:
-    p = _path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".sessions-")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, p)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+def _save(data: dict) -> None:
+    """Serialise the snapshot and hand it to the one atomic writer (0600: profiles
+    are private, and the rename means a poll can never read a half-written file)."""
+    paths.atomic_write(_path(), json.dumps(data, indent=2, sort_keys=True), 0o600)
 
 
 def upsert(records: list[dict]) -> None:
@@ -151,7 +132,7 @@ def upsert(records: list[dict]) -> None:
             data[k] = rec
             changed = True
     if changed:
-        _atomic_write(data)
+        _save(data)
 
 
 def set_tags(host: str, name: str, tags: list) -> None:
@@ -165,7 +146,7 @@ def set_tags(host: str, name: str, tags: list) -> None:
         return
     if rec.get("tags") != tags:
         rec["tags"] = tags
-        _atomic_write(data)
+        _save(data)
 
 
 def set_args(host: str, name: str, args: str) -> None:
@@ -178,7 +159,7 @@ def set_args(host: str, name: str, args: str) -> None:
         return
     if rec.get("args") != args:
         rec["args"] = args
-        _atomic_write(data)
+        _save(data)
 
 
 def set_favorite(host: str, name: str, favorite: bool) -> None:
@@ -193,7 +174,7 @@ def set_favorite(host: str, name: str, favorite: bool) -> None:
         return
     if bool(rec.get("favorite")) != bool(favorite):
         rec["favorite"] = bool(favorite)
-        _atomic_write(data)
+        _save(data)
 
 
 def favorites() -> list[dict]:
@@ -205,7 +186,7 @@ def remove(host: str, name: str) -> None:
     """Drop a profile (called on an explicit kill / forget)."""
     data = _load()
     if data.pop(_key(host, name), None) is not None:
-        _atomic_write(data)
+        _save(data)
 
 
 def get(host: str, name: str) -> dict | None:

@@ -37,6 +37,7 @@ from pathlib import Path
 
 from . import __version__
 from . import netcfg
+from . import paths
 from . import settings
 
 # How often to poll, in seconds. "off" is handled separately -- it is a valid
@@ -59,16 +60,8 @@ _TAG_RE = re.compile(r"^v?\d+(\.\d+){0,3}$")
 _apply_lock = threading.Lock()
 
 
-def _config_dir() -> Path:
-    override = os.environ.get("SERAI_CONFIG_DIR")
-    if override:
-        return Path(override)
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "serai"
-
-
 def _state_path() -> Path:
-    return _config_dir() / "updates.json"
+    return paths.config_dir() / "updates.json"
 
 
 def _load_state() -> dict:
@@ -83,11 +76,7 @@ def _save_state(data: dict) -> None:
     """Write the cache atomically. Never raises -- a read-only config dir must
     degrade to "check every time", not to a broken settings panel."""
     try:
-        path = _state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        paths.atomic_write(_state_path(), json.dumps(data, indent=2), 0o644)
     except OSError:
         pass
 

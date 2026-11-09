@@ -14,7 +14,7 @@ It still never stores your ssh keys or remote passwords -- remote auth stays
 ssh-agent-only (the remote half of invariant #1 is intact). Set SERAI_AUTH=off
 to disable auth entirely, which is only sane on a trusted localhost.
 
-Storage dir mirrors settings.py:
+Storage dir is serai's one config dir (see serai.paths):
   $SERAI_CONFIG_DIR, else $XDG_CONFIG_HOME/serai, else ~/.config/serai.
 
 stdlib only -- no new runtime dependency (scrypt is memory-hard and ships with
@@ -32,6 +32,8 @@ import re
 import secrets
 import time
 from pathlib import Path
+
+from . import paths
 
 COOKIE = "serai_session"
 
@@ -54,20 +56,12 @@ _setup_token: str | None = None
 
 # --- paths -----------------------------------------------------------------
 
-def _config_dir() -> Path:
-    override = os.environ.get("SERAI_CONFIG_DIR")
-    if override:
-        return Path(override)
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "serai"
-
-
 def _users_path() -> Path:
-    return _config_dir() / "users.json"
+    return paths.config_dir() / "users.json"
 
 
 def _secret_path() -> Path:
-    return _config_dir() / "auth_secret"
+    return paths.config_dir() / "auth_secret"
 
 
 def auth_enabled() -> bool:
@@ -88,13 +82,8 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    """Atomic write (temp + rename), 0600 -- the file holds password hashes."""
-    path = _users_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    """Atomic write, 0600 -- the file holds password hashes."""
+    paths.atomic_write(_users_path(), json.dumps(data, indent=2), 0o600)
 
 
 def _hash(password: str, salt: bytes, params: dict | None = None) -> bytes:
@@ -235,11 +224,7 @@ def _secret() -> bytes:
     except (FileNotFoundError, ValueError, OSError):
         pass
     key = secrets.token_bytes(32)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(key.hex(), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    paths.atomic_write(path, key.hex())
     return key
 
 

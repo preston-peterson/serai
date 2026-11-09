@@ -21,6 +21,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import paths
 from . import tls
 
 # DNS label / IP charset. No spaces, '=', or newlines -> can't inject env lines.
@@ -33,8 +34,7 @@ def env_path() -> Path:
     override = os.environ.get("SERAI_ENV_FILE")
     if override:
         return Path(override)
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "serai" / "serai.env"
+    return paths.config_dir() / "serai.env"
 
 
 def _parse() -> dict:
@@ -85,7 +85,6 @@ def write(host: str, hostnames: str) -> list[str]:
         raise ValueError("invalid listen address")
     names = clean_hostnames(hostnames)
     path = env_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (FileNotFoundError, OSError):
@@ -108,10 +107,7 @@ def write(host: str, hostnames: str) -> list[str]:
     if not set_names:
         out.append("SERAI_HOSTNAME=" + ",".join(names))
 
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    paths.atomic_write(path, "\n".join(out) + "\n", 0o600)
     return names
 
 

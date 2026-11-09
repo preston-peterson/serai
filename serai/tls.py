@@ -32,13 +32,7 @@ import socket
 import sys
 from pathlib import Path
 
-
-def _config_dir() -> Path:
-    override = os.environ.get("SERAI_CONFIG_DIR")
-    if override:
-        return Path(override)
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "serai"
+from . import paths
 
 
 def tls_enabled() -> bool:
@@ -60,7 +54,7 @@ def resolve() -> tuple[Path, Path]:
             raise SystemExit("SERAI_CERT/SERAI_KEY not found: " + ", ".join(missing))
         return c, k
 
-    d = _config_dir()
+    d = paths.config_dir()
     c, k = d / "cert.pem", d / "key.pem"
     entries = _desired_san_entries()
     # (re)generate if missing, or if the operator added a name/IP the existing
@@ -121,7 +115,7 @@ def cert_sans(cert_path: Path | None = None) -> list[str]:
     """The DNS names / IPs the active self-signed cert currently covers (for the
     UI to show what's validated). Empty if there's no readable cert."""
     if cert_path is None:
-        cert_path = _config_dir() / "cert.pem"
+        cert_path = paths.config_dir() / "cert.pem"
     try:
         from cryptography import x509
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
@@ -183,19 +177,13 @@ def _generate_self_signed(cert_path: Path, key_path: Path,
         .sign(key, hashes.SHA256())
     )
 
-    cert_path.parent.mkdir(parents=True, exist_ok=True)
     key_pem = key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.TraditionalOpenSSL,
         serialization.NoEncryption(),
     )
-    ktmp = key_path.with_name(key_path.name + ".tmp")
-    ktmp.write_bytes(key_pem)
-    os.chmod(ktmp, 0o600)
-    ktmp.replace(key_path)
-    ctmp = cert_path.with_name(cert_path.name + ".tmp")
-    ctmp.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    ctmp.replace(cert_path)
+    paths.atomic_write(key_path, key_pem, 0o600)              # not world-readable
+    paths.atomic_write(cert_path, cert.public_bytes(serialization.Encoding.PEM), 0o644)
     # to stderr: stdout is reserved for the two paths run.sh reads.
     names = ", ".join(v for _, v in entries)
     print(f"[serai] generated a self-signed TLS cert at {cert_path}\n"
