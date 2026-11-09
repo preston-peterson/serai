@@ -3306,3 +3306,28 @@ def test_a_name_with_nothing_behind_it_is_a_create(monkeypatch, tmp_path, path, 
     monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: True)
     r = client.post(path, json={"host": "local", "name": "cc-newcomer", **extra})
     assert r.status_code == 200, f"{path}: {r.status_code} {r.json()}"
+
+
+def test_forget_profile_drops_it_and_leaves_the_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    killed = []
+    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: killed.append(argv) or True)
+    monkeypatch.setattr(sessions, "session_exists", lambda host, name: False)
+    store.upsert([{"host": "local", "name": "cc-demo", "kind": "claude", "label": "demo",
+                   "path": "/p", "tags": [], "args": "", "owner": ""}])
+    store.set_favorite("local", "cc-demo", True)
+    c = TestClient(app)
+    assert c.post("/api/profiles/forget", json={"host": "local", "name": "cc-demo"}).json() == {"ok": True}
+    assert store.get("local", "cc-demo") is None
+    assert killed == [], "forgetting a profile must never touch tmux"
+
+
+def test_forget_profile_refuses_someone_elses(auth_on, monkeypatch, tmp_path):
+    monkeypatch.setattr(sessions, "session_exists", lambda host, name: False)
+    store.upsert([{"host": "local", "name": "cc-theirs", "kind": "claude", "label": "theirs",
+                   "path": "/p", "tags": [], "args": "", "owner": "alice"}])
+    _as_user(monkeypatch, "bob")
+    r = TestClient(app).post("/api/profiles/forget", json={"host": "local", "name": "cc-theirs"})
+    assert r.status_code == 403
+    assert store.get("local", "cc-theirs") is not None
+

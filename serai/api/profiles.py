@@ -97,3 +97,25 @@ async def api_launch(request: Request) -> JSONResponse:
     except ValueError as exc:                      # not one of the three modes
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True, "launch": launch})
+
+
+@router.post("/api/profiles/forget")
+async def api_profile_forget(request: Request) -> JSONResponse:
+    """Forget a saved profile and leave the running session alone. Body: {host, name}.
+
+    The edit form's "Forget profile" (v3 plan 3.4: one meaning per action).
+    ✕ / Close ends the tmux session and forgets the profile unless it is a
+    favorite; this is the other half -- forget without killing. Owner-gated by
+    ``_target`` (a profile that isn't live is checked against its stored owner),
+    so a guessed name can't forget someone else's. The next poll re-saves a
+    profile for a session that is still running, minus the favorite flag and
+    launch choice -- which is what "forget" means.
+    """
+    t = await common._target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    _, host, name = t
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_pool, store.remove, host, name)
+    return JSONResponse({"ok": True})
+
