@@ -5,6 +5,7 @@
 import { h } from "./dom.js";
 
 const stack = [];
+const isTabs = (el) => !!(el && el.classList && el.classList.contains("tabs"));
 
 /** open({title, body, actions, wide, cls, bare, top, onClose}) -> {el, close(result)}
  *  bare: no header/footer -- the body is the whole panel (the jump palette).
@@ -30,7 +31,10 @@ export function open({ title, body, actions = [], wide = false, onClose, head, b
   }, a.label);
   foot.append(...leftActs.map(mkBtn), h("span.spacer"), ...rightActs.map(mkBtn));
   const panel = h(`div.dialog${wide ? ".wide" : ""}`, { role: "dialog", "aria-modal": "true", "aria-label": title, class: cls },
-    bare ? null : h("div.dialog-head", h("h2", title), head || null, closeBtn),
+    // A tab strip (head with class "tabs") is its own full-width row under the
+    // title, as in the mockups; anything else sits in the title bar.
+    bare ? null : h("div.dialog-head", h("h2", title), head && !isTabs(head) ? head : null, closeBtn),
+    !bare && head && isTabs(head) ? head : null,
     bare ? body : h("div.dialog-body", body),
     actions.length ? foot : null);
   const scrim = h(`div.scrim${top ? ".top" : ""}`, panel);
