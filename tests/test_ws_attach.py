@@ -13,9 +13,9 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-import serai.main as main
 from serai import sessions, tmuxctl
 from serai.main import app
+from serai.ws import attach as ws_attach
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
 
@@ -35,7 +35,7 @@ def tmux(monkeypatch, tmp_path):
     monkeypatch.setenv("SERAI_AUTH", "off")
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path / "cfg"))
     # Pings guarantee a frame at least this often, so no receive() blocks long.
-    monkeypatch.setattr(main, "WS_PING_INTERVAL", 0.1)
+    monkeypatch.setattr(ws_attach, "WS_PING_INTERVAL", 0.1)
 
     def run(*args):
         return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=10)

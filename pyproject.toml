@@ -26,7 +26,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["serai"]
+# The API routers and the attach websocket are subpackages of serai, so they
+# have to be listed here to ship with it.
+packages = ["serai", "serai.api", "serai.ws"]
 
 [tool.setuptools.dynamic]
 version = {attr = "serai.__version__"}

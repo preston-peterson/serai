@@ -1008,7 +1008,7 @@ def test_ssh_for_authenticates_via_agent_only_and_caches(monkeypatch):
 def _only_local_and_host_a(monkeypatch):
     # Hermetic allowlist: 'local' plus one invented alias, same shape as
     # _only_local_hosts but without touching the parser.
-    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "host-a"})
+    monkeypatch.setattr("serai.api.common._known_hosts", lambda: {"local", "host-a"})
 
 
 def test_file_routes_reject_hosts_off_the_allowlist(monkeypatch):
@@ -1245,7 +1245,7 @@ def test_start_dir_parsed_from_listing(monkeypatch):
 def test_api_dir_sets_and_validates(monkeypatch):
     calls = []
     monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: (calls.append(argv) or True))
-    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local"})
+    monkeypatch.setattr("serai.api.common._known_hosts", lambda: {"local"})
     c = TestClient(app)
     r = c.post("/api/dir", json={"host": "local", "name": "shell-a", "path": " ~/git/p "})
     assert r.json() == {"ok": True, "path": "~/git/p"}
@@ -1912,7 +1912,7 @@ def test_folder_relay_reports_progress(tmp_path):
 
 def test_api_files_transfer_streams_progress_then_result(monkeypatch, tmp_path):
     # the endpoint emits NDJSON: {"moved":N}... then a terminal ok (or error)
-    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "proj-web"})
+    monkeypatch.setattr("serai.api.common._known_hosts", lambda: {"local", "proj-web"})
 
     def fake_transfer(src_host, src_path, dst_host, dst_path, on_progress=None):
         for n in (1024, 4096):
@@ -1980,7 +1980,7 @@ def test_api_transfer_validates_source_host(monkeypatch):
     c = TestClient(app)
     called = []
     monkeypatch.setattr(files, "transfer_path", lambda *a: called.append(a))
-    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "proj-web"})
+    monkeypatch.setattr("serai.api.common._known_hosts", lambda: {"local", "proj-web"})
     r = c.post("/api/files/op", json={"op": "transfer", "host": "local", "path": "/tmp/x",
                                       "src_host": "evil-host", "src_path": "/etc/passwd"})
     assert r.status_code == 400 and not called            # unknown source host rejected
@@ -2018,17 +2018,17 @@ def test_version_header_gated_only(tmp_path, monkeypatch):
 def test_version_is_read_from_disk_for_graceful_deploys(tmp_path, monkeypatch):
     # a frontend-only deploy replaces files without restarting; the running
     # process must advertise the NEW on-disk version so tabs get their prompt
-    import serai.main as main
+    import serai.api.common as common
     vf = tmp_path / "__init__.py"
     vf.write_text('__version__ = "9.9.9"\n')
-    monkeypatch.setattr(main, "_VERSION_FILE", vf)
-    monkeypatch.setitem(main._ver_cache, "at", 0.0)   # expire the cache
-    assert main._current_version() == "9.9.9"
+    monkeypatch.setattr(common, "_VERSION_FILE", vf)
+    monkeypatch.setitem(common._ver_cache, "at", 0.0)   # expire the cache
+    assert common._current_version() == "9.9.9"
     r = TestClient(app).get("/api/sessions/saved")
     assert r.headers.get("x-serai-version") == "9.9.9"
     vf.unlink()                                        # unreadable -> keep last known
-    monkeypatch.setitem(main._ver_cache, "at", 0.0)
-    assert main._current_version() == "9.9.9"
+    monkeypatch.setitem(common._ver_cache, "at", 0.0)
+    assert common._current_version() == "9.9.9"
 
 
 def _installer_detect(src: Path, installed: Path) -> str:
@@ -2340,7 +2340,7 @@ def test_update_apply_endpoint_is_admin_only(tmp_path, monkeypatch):
     _updates_env(tmp_path, monkeypatch)
     c = TestClient(app)
     # the autouse _auth_off fixture makes _session return an admin; force non-admin
-    monkeypatch.setattr("serai.main._session",
+    monkeypatch.setattr("serai.api.common._session",
                         lambda req: {"username": "bob", "admin": False})
     assert c.post("/api/updates/apply").status_code == 403
 
@@ -2619,7 +2619,7 @@ def test_every_hidden_toggled_element_survives_its_display_rule():
 
 
 def test_owner_visibility_rules():
-    from serai.main import _owns
+    from serai.api.common import _owns
     admin = {"username": "alice", "admin": True}
     bob = {"username": "bob", "admin": False}
     assert _owns(admin, "") and _owns(admin, "bob"), "an admin sees everything"
@@ -3176,7 +3176,7 @@ def test_forgetting_a_session_drops_its_profile_for_good(tmp_path, monkeypatch):
     assert store.get("local", "cc-k") is None
 
 
-# --- the shared body -> host -> owner gate (serai.main._target) --------------
+# --- the shared body -> host -> owner gate (serai.api.common._target) --------
 
 # Every mutating session route, each with the extra fields it reads off the body
 # once the shared gate has accepted host+name. /api/broadcast is deliberately
@@ -3202,7 +3202,7 @@ def _gate_world(monkeypatch, tmp_path, username="bob", admin=False):
     loudly rather than quietly passing."""
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
-    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "host-a"})
+    monkeypatch.setattr("serai.api.common._known_hosts", lambda: {"local", "host-a"})
 
     def no_tmux(argv):
         raise AssertionError(f"a rejected request reached tmux: {argv}")
@@ -3262,7 +3262,7 @@ def test_the_gate_passes_an_ordinary_request(monkeypatch, tmp_path, path, extra)
     the body the gate hands back."""
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
-    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "host-a"})
+    monkeypatch.setattr("serai.api.common._known_hosts", lambda: {"local", "host-a"})
     sent = []
     monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: sent.append(argv) or True)
     monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: True)
