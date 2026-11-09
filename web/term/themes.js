@@ -1,7 +1,9 @@
 // Terminal color presets for the in-app theme picker (xterm.js theme format).
-// Palettes are the standard community/Ptyxis palettes of the same name;
-// "GNOME Dark" (the default) is the linux palette on the GNOME grey background.
-const TERM_THEMES = {
+// Palettes are the standard community/Ptyxis palettes of the same name; "Slate"
+// (the v3 default) matches the app's own surface. "GNOME Dark" was the v2 default.
+export const TERM_THEMES = {
+  // v3 default: the approved mockups' terminal surface (Slate UI palette).
+  "Slate": { background: "#0b0e12", foreground: "#d0d6de", cursor: "#d0d6de", cursorAccent: "#0b0e12", selectionBackground: "rgba(91,155,213,.35)", black: "#1a212b", red: "#d9536b", green: "#5cb27a", yellow: "#e0a53a", blue: "#5b9bd5", magenta: "#b48ead", cyan: "#3fb6ad", white: "#c5ccd6", brightBlack: "#5c6675", brightRed: "#ef6f85", brightGreen: "#7cd198", brightYellow: "#f2c062", brightBlue: "#7fb6e8", brightMagenta: "#cba6c4", brightCyan: "#62d1c8", brightWhite: "#eef2f7" },
   "GNOME Dark": { background: "#202628", foreground: "#d0cfcc", cursor: "#d0cfcc", black: "#000000", red: "#aa0000", green: "#00aa00", yellow: "#aa5500", blue: "#0000aa", magenta: "#aa00aa", cyan: "#00aaaa", white: "#aaaaaa", brightBlack: "#555555", brightRed: "#ff5555", brightGreen: "#55ff55", brightYellow: "#ffff55", brightBlue: "#5555ff", brightMagenta: "#ff55ff", brightCyan: "#55ffff", brightWhite: "#ffffff" },
   "Linux": { background: "#000000", foreground: "#aaaaaa", cursor: "#aaaaaa", black: "#000000", red: "#aa0000", green: "#00aa00", yellow: "#aa5500", blue: "#0000aa", magenta: "#aa00aa", cyan: "#00aaaa", white: "#aaaaaa", brightBlack: "#555555", brightRed: "#ff5555", brightGreen: "#55ff55", brightYellow: "#ffff55", brightBlue: "#5555ff", brightMagenta: "#ff55ff", brightCyan: "#55ffff", brightWhite: "#ffffff" },
   "GNOME": { background: "#1c1c1f", foreground: "#ffffff", cursor: "#ffffff", black: "#241f31", red: "#c01c28", green: "#2ec27e", yellow: "#f5c211", blue: "#1e78e4", magenta: "#9841bb", cyan: "#0ab9dc", white: "#c0bfbc", brightBlack: "#5e5c64", brightRed: "#ed333b", brightGreen: "#57e389", brightYellow: "#f8e45c", brightBlue: "#51a1ff", brightMagenta: "#c061cb", brightCyan: "#4fd2fd", brightWhite: "#f6f5f4" },
@@ -17,8 +19,8 @@ const TERM_THEMES = {
   "Ubuntu": { background: "#300A24", foreground: "#FFFFFF", cursor: "#FFFFFF", black: "#1B1B1B", red: "#CC1A12", green: "#4E9A06", yellow: "#C4A000", blue: "#3667A6", magenta: "#7F5985", cyan: "#06989A", white: "#D5D5D5", brightBlack: "#838383", brightRed: "#F93632", brightGreen: "#8AE234", brightYellow: "#FCE94F", brightBlue: "#729FCF", brightMagenta: "#AD7FA8", brightCyan: "#34E2E2", brightWhite: "#EEEEEC" },
   "xterm": { background: "#000000", foreground: "#ffffff", cursor: "#ffffff", black: "#000000", red: "#cd0000", green: "#00cd00", yellow: "#cdcd00", blue: "#0000ee", magenta: "#cd00cd", cyan: "#00cdcd", white: "#e5e5e5", brightBlack: "#7f7f7f", brightRed: "#ff0000", brightGreen: "#00ff00", brightYellow: "#ffff00", brightBlue: "#5c5cff", brightMagenta: "#ff00ff", brightCyan: "#00ffff", brightWhite: "#ffffff" },
 };
-const TERM_THEME_ORDER = ["GNOME Dark", "Linux", "GNOME", "Tango", "Dracula", "Nord", "Solarized", "Gruvbox", "One Dark", "Tomorrow Night", "Catppuccin Mocha", "Campbell", "Ubuntu", "xterm"];
-const TERM_FONTS = [
+export const TERM_THEME_ORDER = ["Slate", "GNOME Dark", "Linux", "GNOME", "Tango", "Dracula", "Nord", "Solarized", "Gruvbox", "One Dark", "Tomorrow Night", "Catppuccin Mocha", "Campbell", "Ubuntu", "xterm"];
+export const TERM_FONTS = [
   { name: "DejaVu Sans Mono", value: "'DejaVu Sans Mono', monospace" },
   { name: "Ubuntu Mono", value: "'Ubuntu Mono', monospace" },
   { name: "Liberation Mono", value: "'Liberation Mono', monospace" },

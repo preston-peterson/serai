@@ -1,0 +1,10 @@
+# Vendored, unmodified, from the npm registry (via cdn.jsdelivr.net/npm).
+# Loaded as classic scripts (UMD globals) before the ES-module app.
+# MIT licensed: see LICENSE-xterm (the addons ship the same terms).
+
+1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495  xterm.js             @xterm/xterm@5.5.0/lib/xterm.js
+ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6  xterm.css            @xterm/xterm@5.5.0/css/xterm.css
+bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089  addon-fit.js         @xterm/addon-fit@0.10.0
+c3fe3f1e8be371c7b2034170c6a2e3cc1b9dbe6c9f1f283cbc17ff456ef78818  addon-clipboard.js   @xterm/addon-clipboard@0.1.0
+f230a6c8211ce4614dda5441f27b603c7c1ca95151a655bc0efac6377ee643f0  addon-web-links.js   @xterm/addon-web-links@0.11.0
+3cf52d71d9deb4ba60125087434c53e3fb35bb2249db9b13987991fd2db1c7bd  addon-search.js      @xterm/addon-search@0.15.0

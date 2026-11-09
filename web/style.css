@@ -1,1213 +1,198 @@
+/* serai v3 — ported from the approved v3 mockups (tokens + components).
+   Slate palette carried over from v2. The mockups' own chrome is not here. */
 :root {
-  /* Slate palette (the approved mockup): cool blue-grey ground, steel-blue
-     accent, functional state colours kept separate from the accent. */
-  --bg: #0e1116;
-  --surface: #151a21;
-  --surface-2: #1a212b;
-  --border: #2a333f;
-  --text: #dfe5ee;
-  --muted: #98a3b3;
-  --faint: #5c6675;
-  --accent: #5b9bd5;
-  --accent-bg: #1b2a3a;
-  --green: #5cb27a;   /* working  */
-  --amber: #e0a53a;   /* blocked  */
-  --teal: #3fb6ad;    /* done     */
-  /* The approved mockup's own token names, so the ported board/rail CSS reads
-     exactly as it was designed (~/git/tmp/serai-fullscreen-slate-phosphor.html). */
-  --panel: #1a212b;        /* card / rail ground    */
-  --raised: #232c38;       /* hover + selected row  */
-  --border-st: #39485a;    /* stronger hairline     */
-  --term-bg: #0b0e12;      /* in-card terminal      */
-  --accent-ink: #0e1116;   /* text on accent        */
-  --text-dim: #98a3b3;
-  --text-faint: #5c6675;
-  --st-working: #5cb27a;
-  --st-blocked: #e0a53a;
-  --st-stuck: #d9536b;   /* rose/red -- a looping pane, distinct from working/blocked */
-  --st-done: #3fb6ad;
-  --st-idle: #6e7681;
-  --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  --bg: #0e1116; --surface: #151a21; --surface-2: #1a212b; --panel: #1a212b; --raised: #232c38;
+  --border: #2a333f; --border-st: #39485a;
+  --text: #dfe5ee; --text-dim: #98a3b3; --text-faint: #5c6675;
+  --accent: #5b9bd5; --accent-bg: #1b2a3a; --accent-ink: #0e1116;
+  --danger: #d9536b; --danger-bg: #3a1b22;
+  --st-working: #5cb27a; --st-blocked: #e0a53a; --st-stuck: #d9536b; --st-done: #3fb6ad; --st-idle: #6e7681;
+  --term-bg: #0b0e12;
+  --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --r: 6px; --r-lg: 10px;
 }
-
 * { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input, select, textarea { font: inherit; }
+code, kbd, .mono { font-family: var(--mono); }
+kbd { font-size: .72rem; color: var(--text-faint); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 .35em; }
 
-/* The rem basis is 16px so the board/rail CSS ported from the mockup renders at
-   exactly the designed size; body text stays at serai's 14px. */
-html { margin: 0; height: 100%; font-size: 16px; }
-body {
-  margin: 0; height: 100%;
-  background: var(--bg); color: var(--text);
-  font-family: var(--sans); font-size: 14px;
-}
-
-#app { display: flex; flex-direction: column; height: 100vh; }
-
-.topbar {
-  position: relative;
-  display: flex; align-items: center; gap: 12px;
-  padding: 8px 12px; background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-/* wordmark (mockup .brand): the accent letter is boxed; clicking it goes home */
-.topbar .title {
-  display: flex; align-items: center; flex-shrink: 0; cursor: pointer;
-  font-family: var(--mono); font-weight: 700; font-size: 1.05rem;
-  letter-spacing: -.02em; color: var(--text);
-  background: none; border: none; padding: 0 4px 0 0;
-}
-.topbar .title:hover { color: var(--accent); }
-.topbar .title .k {
-  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-radius: 4px; padding: 0 .18em; margin: 0 .04em;
-}
-.topbar-sp { flex: 1; }
-/* the tag strip can get long -- never let it squeeze the controls onto two lines */
-.topbar .btn, .topbar .avatar { white-space: nowrap; flex-shrink: 0; }
-/* the jump pill (mockup .srch) -- opens the command palette */
-.srch {
-  font-family: var(--mono); font-size: .78rem; color: var(--text-faint);
-  padding: .32rem .65rem; border-radius: 7px; background: var(--panel);
-  border: 1px solid var(--border); white-space: nowrap; cursor: pointer; flex-shrink: 0;
-}
-.srch:hover { color: var(--text-dim); border-color: var(--border-st); }
-/* round avatar (mockup .avatar) */
-.avatar {
-  width: 27px; height: 27px; border-radius: 50%; flex-shrink: 0; cursor: pointer;
-  background: color-mix(in srgb, var(--accent) 30%, var(--panel));
-  border: 1px solid var(--border-st); display: grid; place-items: center;
-  font-family: var(--mono); font-size: .72rem; color: var(--accent); text-transform: lowercase;
-}
-.avatar[hidden] { display: none; }
-
-/* workspace picker: one compact control, because ~20 tags never fit a strip */
-.picker { position: relative; flex-shrink: 0; }
-.picker-btn {
-  font-family: var(--mono); font-size: .78rem; cursor: pointer; white-space: nowrap;
-  padding: .32rem .7rem; border-radius: 7px;
-  background: var(--panel); border: 1px solid var(--border-st); color: var(--text);
-}
-.picker-btn:hover { border-color: var(--accent); }
-.picker-btn .cnt { color: var(--text-faint); margin-left: .35rem; font-variant-numeric: tabular-nums; }
-.menu {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
-  /* Fallback only — sizeWsMenu() replaces this with the real space below the menu. */
-  width: 230px; max-height: 85vh; overflow: auto; padding: .3rem;
-  background: var(--panel); border: 1px solid var(--border-st); border-radius: 9px;
-  box-shadow: 0 18px 40px -14px rgba(0, 0, 0, .7);
-}
-.menu[hidden] { display: none; }
-.menu-row {
-  display: flex; align-items: center; gap: .5rem; cursor: pointer;
-  padding: .32rem .5rem; border-radius: 6px;
-  font-family: var(--mono); font-size: .78rem; color: var(--text-dim);
-}
-.menu-row:hover { background: var(--raised); color: var(--text); }
-.menu-row.on { background: var(--raised); color: var(--accent); }
-.menu-row .c { margin-left: auto; color: var(--text-faint); font-size: .7rem; font-variant-numeric: tabular-nums; }
-/* Fixed-width slot so labels stay aligned whether or not the row is ticked. */
-.menu-row .tick { width: 1ch; flex: 0 0 1ch; color: var(--accent); }
-.menu-sep { height: 1px; background: var(--border); margin: .28rem .3rem; }
-.topbar .title .logo { display: block; border-radius: 5px; }
-
-.btn {
-  background: transparent; color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 5px 10px; font-size: 12px; cursor: pointer;
-}
-.btn:hover { background: var(--surface-2); }
-
-.layout { flex: 1; display: flex; min-height: 0; }
-
-.sidebar {
-  width: 230px; flex-shrink: 0; background: var(--surface);
-  display: flex; flex-direction: column; min-height: 0;
-}
-.sidebar-head { padding: 10px; border-bottom: 1px solid var(--border); }
-#filter {
-  width: 100%; padding: 7px 9px; font-size: 12px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-}
-#filter:focus { outline: none; border-color: var(--accent); }
-
-.groupby { display: flex; align-items: center; gap: 4px; margin-top: 8px; font-size: 11px; color: var(--faint); }
-.groupby button {
-  background: transparent; color: var(--muted); border: none;
-  padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 11px;
-}
-.groupby button.active { background: var(--accent-bg); color: var(--accent); }
-
-.tree { flex: 1; overflow-y: auto; padding: 6px; }
-
-/* post-reboot "resume N sessions" banner */
-.restore-banner {
-  display: flex; flex-direction: column; gap: 8px;
-  margin: 8px; padding: 8px 10px; font-size: 12px;
-  background: var(--accent-bg); color: var(--text);
-  border: 1px solid var(--accent); border-radius: 8px;
-}
-/* the author display:flex above would defeat the hidden attribute (that bug
-   shipped once: an un-dismissable banner) -- keep this guard with the rule */
-.restore-banner[hidden] { display: none; }
-.restore-head { display: flex; align-items: center; gap: 8px; }
-.restore-msg { flex: 1; min-width: 0; }
-.restore-link {
-  flex-shrink: 0; background: transparent; border: none; color: var(--accent);
-  cursor: pointer; font-size: 12px; padding: 0 2px; text-decoration: underline;
-}
-.restore-x {
-  flex-shrink: 0; background: transparent; border: none; color: var(--muted);
-  cursor: pointer; font-size: 12px; padding: 0 2px;
-}
-.restore-x:hover { color: var(--text); }
-.restore-list { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
-.restore-list[hidden] { display: none; }
-.restore-row {
-  display: flex; align-items: center; gap: 7px;
-  padding: 3px 2px; border-radius: 5px; cursor: pointer;
-  font-family: var(--mono); font-size: 12px;
-}
-.restore-row:hover { background: var(--surface-2); }
-/* the set-them-all row: reads as a control over the list, not one of its items */
-.restore-bulk { border-bottom: 1px solid var(--border); margin-bottom: .25rem; padding-bottom: .35rem; }
-.restore-bulk .restore-row-text { font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; }
-.restore-row-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* the row is a div now (it holds a select); the tick half stays a label */
-.restore-tick { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; cursor: pointer; }
-/* Fixed width on purpose: sized to its content it grew and shrank with the
-   selected option, so picking "continue last" visibly squeezed the session name
-   beside it and the name jumped as you changed the dropdown. */
-.restore-resume {
-  flex-shrink: 0; margin-left: 6px; width: 88px;
-  font-family: var(--mono); font-size: 11px;
-  background: var(--bg); color: var(--text-dim);
-  border: 1px solid var(--border); border-radius: 5px; padding: 1px 4px; cursor: pointer;
-}
-.restore-resume:hover { color: var(--text); border-color: var(--border-st); }
-.restore-resume:disabled { opacity: .5; cursor: default; }
-/* A row that is showing its args box becomes two lines, so the box sits directly
-   under the row it belongs to rather than floating between neighbours. */
-.restore-row-2 { flex-direction: column; align-items: stretch; gap: 3px; }
-.restore-line { display: flex; align-items: center; gap: 7px; }
-.restore-args {
-  font-family: var(--mono); font-size: 11px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--accent); border-radius: 5px; padding: 2px 5px;
-  margin-left: 22px; box-sizing: border-box; width: calc(100% - 22px);
-}
-.restore-args:focus { outline: none; }
-/* A labelled pill, not a bare "⋯": the glyph read as decoration and nobody found
-   it. It says what it opens, and at 36px still costs no session name. */
-.restore-more {
-  flex-shrink: 0; background: transparent; border: 1px solid var(--border);
-  color: var(--text-faint); border-radius: 4px; cursor: pointer;
-  font-family: var(--mono); font-size: 9px; font-weight: 700;
-  letter-spacing: .06em; text-transform: uppercase;
-  padding: 1px 5px; line-height: 1.4; position: relative;
-}
-.restore-more:hover, .restore-more.open { color: var(--accent); border-color: var(--accent); }
-/* a dot marks "this session already has args" -- the full string is on the
-   tooltip, since an inline chip truncated to noise at the banner's width */
-.restore-more.has::after {
-  content: ""; position: absolute; top: -2px; right: -1px;
-  width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
-}
-/* Not a control: when the args carry --resume/--continue there is nothing to
-   pick, so this states what will happen. Matches the select's width so the rows
-   still line up. */
-.restore-from-args {
-  flex: none; width: 88px; margin-left: 6px; text-align: center;
-  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
-}
-.restore-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.restore-actions .btn { padding: 4px 10px; }
-
-.spinner {
-  display: inline-block; width: 12px; height: 12px; flex-shrink: 0;
-  border: 2px solid var(--border); border-top-color: var(--accent);
-  border-radius: 50%; animation: spin 0.7s linear infinite;
-}
-.spinner.hidden { display: none; }
-#sessions-spinner { margin-left: auto; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.tree-loading { display: flex; align-items: center; gap: 8px; padding: 14px; color: var(--muted); font-size: 12px; }
-
-.group-head {
-  display: flex; align-items: center; gap: 7px;
-  padding: 7px 6px; color: var(--muted);
-  font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase;
-  cursor: pointer; border-radius: 6px; user-select: none;
-}
-.group-head:hover { background: var(--surface-2); }
-.group-head .chev { width: 10px; color: var(--faint); flex-shrink: 0; }
-.group-head .dot { width: 7px; height: 7px; }
-.group-head .has-active { color: var(--accent); }
-.group-head .count { margin-left: auto; color: var(--faint); }
-/* collapse/expand-all, styled like the group-mode buttons beside it */
-.tree-toggle {
-  background: transparent; color: var(--muted); border: none;
-  padding: 3px 6px; border-radius: 6px; cursor: pointer; font-size: 10px;
-}
-.tree-toggle:hover { background: var(--surface-2); color: var(--text); }
-
-.row {
-  display: flex; align-items: center; gap: 8px;
-  margin-left: 12px; padding: 7px 9px; border-radius: 6px;
-  cursor: pointer; font-family: var(--mono); font-size: 12.5px;
-}
-.row:hover { background: var(--surface-2); }
-.row.active { background: var(--accent-bg); color: var(--accent); }
-.row .kind { font-size: 12px; color: var(--faint); width: 12px; text-align: center; }
-.row.active .kind { color: var(--accent); }
-.row .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row .tags { display: flex; gap: 4px; }
-.row .tag { font-size: 10px; padding: 0 6px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
-.row.session { margin-left: 24px; }
-
-.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--faint); display: inline-block; }
-.dot.running { background: var(--green); }
-.dot.needs_input { background: var(--amber); }
-.dot.stuck { background: var(--st-stuck); }
-.dot.idle { background: var(--faint); }
-.dot.done { background: var(--teal); }
-
-.legend {
-  display: flex; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; border-top: 1px solid var(--border);
-  font-size: 10.5px; color: var(--faint);
-}
-.legend span { display: inline-flex; align-items: center; gap: 4px; }
-.legend .dot { width: 7px; height: 7px; }
-
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
-
-/* --- board: a state-first grid of every session, overlaying the main area.
-   Additive to the sidebar tree -- same data, same attach path. State colours
-   map running->working (green), needs_input->blocked (amber), idle (grey),
-   done (teal, once the backend emits it). --------------------------------- */
-.board-view {
-  flex: 1; min-height: 0; display: flex; flex-direction: column;
-  background: var(--bg);
-}
-.board-view[hidden] { display: none; }
-.layout[hidden] { display: none; }
-.board-filter {
-  width: 210px; padding: .32rem .65rem; font-size: .78rem; font-family: var(--mono);
-  background: var(--panel); color: var(--text);
-  border: 1px solid var(--border); border-radius: 7px;
-}
-.board-filter:focus { outline: none; border-color: var(--accent); }
-.board-filter::placeholder { color: var(--text-faint); }
-.board-back { flex-shrink: 0; }
-.board-empty-state[hidden] { display: none; }
-.board-empty-state, .board-empty { color: var(--text-dim); font-size: 13px; padding: 20px; }
-
-/* summary strip (mockup .bsum) */
-.board-bar {
-  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 1.1rem;
-  padding: .55rem .95rem; background: var(--panel);
-  border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: .8rem;
-}
-.board-bar-sp { flex: 1; }
-.board-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 1.1rem; }
-.board-summary .sc { display: inline-flex; align-items: center; gap: .4rem; color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.board-summary .sc b { color: var(--text); }
-
-/* grid (mockup .board) */
-.board-grid {
-  --board-col: 255px;   /* min column width  */
-  --card-h: 9.1rem;     /* = header + tail + footer */
-  --tail-h: 4.4rem;     /* pane preview height */
-  flex: 1; overflow: auto; padding: .9rem;
-  display: grid; gap: .8rem; align-content: start;
-  grid-template-columns: repeat(auto-fill, minmax(var(--board-col), 1fr));
-  /* Explicit row height: the cards are overflow:hidden, which zeroes their
-     automatic minimum size, so an `auto` track happily sized itself smaller than
-     the card's content and clipped the footer. Every tier below keeps it
-     explicit for the same reason -- only the value changes, never the mechanism. */
-  grid-auto-rows: var(--card-h);
-}
-/* Filter down to a handful and the space should go to pane content, not
-   whitespace. Card height tracks the tail exactly: header + footer is ~4.7rem. */
-.board-grid.roomy { --board-col: 340px; --card-h: 13.5rem; --tail-h: 8.8rem; }
-.board-grid.large { --board-col: 460px; --card-h: 18rem;   --tail-h: 13.3rem; }
-
-/* card (mockup .card) */
-.bcard {
-  --state: var(--st-idle);
-  border: 1px solid var(--border); border-left: 3px solid var(--state);
-  border-radius: 10px; overflow: hidden; background: var(--panel);
-  display: flex; flex-direction: column; cursor: pointer;
-  transition: border-color .15s, background-color .15s;
-}
-/* Highlight on hover, but never move: the card used to lift by 1px, and running
-   the pointer down a column of them read as the whole list bouncing. Colour
-   changes cost no layout and no motion. */
-.bcard:hover { border-color: var(--border-st); background: var(--raised); }
-.bcard.active { border-color: var(--accent); }
-.bcard.st-running { --state: var(--st-working); }
-.bcard.st-needs_input { --state: var(--st-blocked); }
-.bcard.st-stuck { --state: var(--st-stuck); }
-.bcard.st-done { --state: var(--st-done); }
-.bcard.st-idle { --state: var(--st-idle); }
-/* an exited claude session, offered for resume: dimmed, with an accented
-   "resume" action so it reads as a call to act, not a live session */
-.bcard.st-exited { --state: var(--st-idle); opacity: .82; border-style: dashed; }
-.bcard.st-exited:hover { opacity: 1; }
-.dot.exited { background: var(--st-idle); }
-.bcard .mini.pri { color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 600; }
-.bcard .mini.pri:hover { filter: brightness(1.08); color: var(--accent-ink); }
-.bcard .mini.x { padding: .12rem .34rem; }
-.bcard-h {
-  display: flex; align-items: center; gap: .5rem; padding: .55rem .68rem .45rem;
-  background: color-mix(in srgb, var(--state) 8%, transparent);
-}
-.bcard .bkind {
-  font-family: var(--mono); font-size: .63rem; font-weight: 700;
-  letter-spacing: .08em; text-transform: uppercase; flex: none;
-  padding: .1rem .32rem; border-radius: 5px;
-  border: 1px solid var(--border-st); color: var(--text-faint);
-}
-.bcard .bkind.cc {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.bcard .bkind.gr {
-  color: #e8825a;
-  border-color: color-mix(in srgb, #e8825a 45%, transparent);
-  background: color-mix(in srgb, #e8825a 12%, transparent);
-}
-.bcard .bkind.oc {
-  color: #b58cf0;
-  border-color: color-mix(in srgb, #b58cf0 45%, transparent);
-  background: color-mix(in srgb, #b58cf0 12%, transparent);
-}
-.bcard .bkind.hm {
-  color: #5cc0b0;
-  border-color: color-mix(in srgb, #5cc0b0 45%, transparent);
-  background: color-mix(in srgb, #5cc0b0 12%, transparent);
-}
-.bcard .bname { font-family: var(--mono); font-weight: 600; font-size: .9rem; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bcard .bhost { font-family: var(--mono); font-size: .7rem; color: var(--text-faint); flex: none; }
-.bcard .bhost::before { content: "\25C8 "; opacity: .6; }
-
-/* in-card terminal preview (mockup .term) -- the min-height is what gives the
-   cards their room; the coloured spans are what make them read as live panes. */
-.bcard .btail {
-  font-family: var(--mono); font-size: .73rem; line-height: 1.5; color: var(--text-dim);
-  background: var(--term-bg); border: 1px solid var(--border); border-radius: 6px;
-  /* 4.4rem is the height the mockup's term box actually rendered at (3 lines of
-     .73rem/1.5 + padding). Its 3.6rem floor never showed, because its sample
-     tails were always 3 lines; real panes are often shorter, so we set the floor
-     to the rendered height to keep the grid as roomy and uniform as designed. */
-  /* A fixed height, not a min: the grid sizes rows from the tail's *text*
-     contribution, which ignores min-height -- short tails produced a short row
-     and the footer overflowed and got clipped. Fixing the height also makes the
-     grid uniform, which is how the mockup reads. 4.4rem is the height the
-     mockup's term box actually rendered at (3 lines of .73rem/1.5 + padding). */
-  /* flex:none so it holds that height -- as a flex item it would otherwise
-     shrink to fit the row, which is what collapsed it to two lines. The height
-     comes from the grid's tier, so a roomier board shows more of the pane. */
-  margin: 0 .5rem; padding: .5rem .6rem; height: var(--tail-h, 4.4rem); flex: none;
-  white-space: pre-wrap; word-break: break-word; overflow: hidden;
-}
-.bcard .btail .p { color: var(--st-working); }
-.bcard .btail .b { color: var(--st-blocked); }
-.bcard .btail .s { color: var(--st-stuck); }
-.bcard .btail .a { color: var(--accent); }
-.bcard .btail .h { color: var(--st-done); }
-.bcard .btail .d { color: var(--text-faint); }
-.caret {
-  display: inline-block; width: .55em; height: 1em; vertical-align: -.15em;
-  background: var(--st-working); animation: blink 1.05s step-end infinite;
-}
-@keyframes blink { 50% { opacity: 0; } }
-.dot.pulse { animation: pulse 1.8s ease-in-out infinite; }
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--state) 55%, transparent); }
-  60%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state) 0%, transparent); }
-}
-
-.bcard-f { display: flex; align-items: center; gap: .5rem; padding: .5rem .68rem .55rem; }
-.bchip {
-  display: inline-flex; align-items: center; gap: .38rem;
-  font-family: var(--mono); font-size: .72rem; font-weight: 600; color: var(--state);
-  padding: .2rem .5rem; border-radius: 20px;
-  background: color-mix(in srgb, var(--state) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--state) 34%, transparent);
-}
-.bchip .dot { background: var(--state); }
-.bcard .wn { font-family: var(--mono); font-size: .7rem; color: var(--text-faint); flex: 1; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bcard .mini {
-  font-family: var(--mono); font-size: .72rem; color: var(--text-faint);
-  border: 1px solid var(--border); background: var(--surface);
-  border-radius: 6px; padding: .12rem .42rem; cursor: pointer; flex: none; white-space: nowrap;
-}
-.bcard .mini:hover { color: var(--accent); border-color: var(--accent); }
-.bcard .btags { display: flex; gap: 4px; }
-.bcard .btags .tag { font-size: 10px; padding: 0 6px; border-radius: 999px; background: var(--surface); color: var(--text-dim); }
-@media (prefers-reduced-motion: reduce) { .caret, .dot.pulse { animation: none; } }
-
-/* ===========================================================================
-   Phone layout. Desktop puts a 230px rail beside the terminal and six controls
-   in the top bar; neither survives 390px. Here the rail becomes a slide-over
-   drawer, the terminal takes the full width, and what the top bar can't hold
-   moves to a bottom nav. Ported from the approved phone mockup
-   (~/git/tmp/serai-phone-slate.html).
-   ======================================================================== */
-.mobile-only { display: none; }
-.mobile-only[hidden] { display: none; }   /* the media query below sets flex */
-.mobile-nav { display: none; }
-.rail-scrim[hidden] { display: none; }
-.sheet-scrim[hidden] { display: none; }
-.sheet-grab { display: none; width: 38px; height: 4px; border-radius: 3px; background: var(--border-st); margin: .35rem auto .5rem; }
-
-@media (max-width: 820px) {
-  .mobile-only { display: flex; }
-
-  /* the rail slides over instead of taking a column */
-  .layout { position: relative; }
-  .sidebar {
-    position: fixed; top: 0; bottom: 0; left: 0; z-index: 70;
-    width: min(84vw, 320px);
-    transform: translateX(-100%); transition: transform .18s ease-out;
-    box-shadow: 0 0 40px rgba(0, 0, 0, .5);
-  }
-  .sidebar.open { transform: none; }
-  .rail-scrim { position: fixed; inset: 0; z-index: 65; background: rgba(0, 0, 0, .5); }
-  .hsplit { display: none; }          /* nothing to drag when the rail floats */
-  .main { min-width: 0; }
-
-  /* One card per row. Keep the explicit grid-auto-rows from the base rule: the
-     cards are overflow:hidden, so an `auto` row can't measure them and collapses
-     to a bar (that bug shipped once on desktop -- don't reintroduce it here). */
-  .board-grid { grid-template-columns: 1fr; padding: .7rem; }
-
-  /* the top bar keeps only what fits; the rest lives in the bottom nav */
-  .topbar { gap: 8px; padding: 6px 8px; }
-  .topbar .srch, #board-toggle, #new-session { display: none; }
-  .board-bar { padding: .5rem .7rem; gap: .7rem; }
-  .board-filter { width: 100%; order: 9; }
-
-  /* terminal key bar (mockup .keybar) */
-  .keybar {
-    flex: none; gap: .3rem; padding: .4rem .5rem;
-    background: var(--panel); border-top: 1px solid var(--border);
-    flex-wrap: wrap;   /* wrap, never a hidden horizontal scroll: a phone has no
-                          visible scrollbar, so an overflowing row would hide the
-                          page keys (unreachable = they don't exist). */
-  }
-  .kcap {
-    flex: none; font-family: var(--mono); font-size: .8rem;
-    padding: .42rem .62rem; border: 1px solid var(--border); border-radius: 7px;
-    background: var(--surface); color: var(--text-dim); cursor: pointer;
-  }
-  .kcap:active { background: var(--raised); color: var(--text); }
-  .kcap.wide { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-
-  /* bottom nav (mockup .bnav) */
-  .mobile-nav {
-    display: flex; flex: none; z-index: 60;
-    border-top: 1px solid var(--border); background: var(--surface);
-    padding: .3rem .2rem calc(.4rem + env(safe-area-inset-bottom, 0px));
-  }
-  .mnav {
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: .15rem;
-    background: none; border: none; cursor: pointer;
-    font-family: var(--mono); font-size: .62rem; color: var(--text-faint); padding: .3rem 0;
-  }
-  .mnav .g { font-size: 1.05rem; line-height: 1; }
-  .mnav.on { color: var(--accent); }
-
-  /* touch has no hover, so row actions can't hide behind it -- the
-     (hover: none) block by the rail row-action rules makes ⋮/✕ visible */
-  .rail .row:hover .rw { display: inline; }
-  .rail .row { padding: .5rem .5rem; height: 31px; }   /* finger-sized */
-  /* the group header already names the tag -- drop the per-row copy so the
-     session name isn't truncated by the always-visible row actions */
-  .rail .row .tags { display: none; }
-  .menu { width: min(80vw, 280px); }
-  .modal-overlay .edit-popover { width: min(94vw, 420px); }
-
-  /* file actions as a bottom sheet (mockup screen 3): the same menu and the same
-     handlers, re-anchored and finger-sized, opened by long-press. */
-  .sheet-scrim { position: fixed; inset: 0; z-index: 80; background: rgba(0, 0, 0, .5); }
-  #file-menu.sheet {
-    position: fixed; left: 0; right: 0; bottom: 0; top: auto;
-    width: auto; max-width: none; min-width: 0; z-index: 85;
-    border-radius: 18px 18px 0 0;
-    padding: .3rem .5rem calc(1rem + env(safe-area-inset-bottom, 0px));
-    box-shadow: 0 -12px 30px -12px rgba(0, 0, 0, .6);
-  }
-  #file-menu.sheet .sheet-grab { display: block; }
-  #file-menu.sheet .ctx-item { padding: .8rem .9rem; font-size: .95rem; border-radius: 9px; }
-  #file-menu.sheet .ctx-sep { margin: .3rem .5rem; }
-  /* destructive action reads as destructive, as in the mockup */
-  #file-menu.sheet #fm-delete:not(.disabled) { color: var(--st-blocked); }
-
-  /* Terminal + key bar + bottom nav own the screen while attached. The file
-     browser is NOT a split on a phone: it starts hidden, and the nav's Files
-     button raises it as a bottom sheet. `.main` sits between the top bar and
-     the nav, so `position:absolute` on the pane overlays the terminal and
-     docks the sheet exactly on top of the nav -- the nav stays tappable, so
-     Board/Jump/New/Files all dismiss it and it can never trap a file. */
-  .main .files-pane { display: none; }   /* closed by default on a phone */
-  body.phone-files-open .main .files-pane {
-    display: flex; flex-direction: column;
-    position: absolute; inset: 0; z-index: 75;
-    background: var(--surface);
-  }
-  /* the drag bar is a desktop affordance; the sheet is a fixed height */
-  .main .files-pane .vsplit { display: none; }
-  body.phone-files-open .main .files-pane .files { flex: 1; min-height: 0; height: auto; }
-  @keyframes files-sheet-up { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
-  body.phone-files-open .main .files-pane { animation: files-sheet-up .18s ease-out; }
-
-  /* Text inputs must stay >=16px or Safari/Chrome auto-zoom the whole layout
-     as soon as one is focused -- the jump that squeezes a 390px terminal. A
-     plain `input` rule loses to the app's more specific `.form-row input`
-     (0,1,1 vs 0,0,1) font-sizes, so it must win by flag, not specificity. */
-  #app input, #app select, #app textarea { font-size: 16px !important; }
-}
-
-/* --- session rail: the attached view's session list (mockup .rail/.rrow/.rail-h).
-   Same rows the tree rendered, restyled to the mockup's compact form. -------- */
-.rail { background: var(--panel); }
-.rail .tree { padding: .55rem; display: flex; flex-direction: column; gap: .12rem; }
-.rail .group-head {
-  font-family: var(--mono); font-size: .66rem; letter-spacing: .16em;
-  text-transform: uppercase; color: var(--text-faint);
-  padding: .55rem .5rem .3rem; border-radius: 0;
-}
-.rail .group-head:hover { background: transparent; color: var(--text-dim); }
-/* Fixed height (measured: 27.78px natural, so 28px is a no-op at rest). Hovering
-   swaps the age out for the row action buttons, and pinning the height means no
-   difference between those children can ever reflow the list. */
-.rail .row, .rail .row.session {
-  margin-left: 0; padding: .4rem .5rem; border-radius: 7px; gap: .5rem;
-  height: 28px; flex: none;
-  font-family: var(--mono); font-size: .8rem; color: var(--text-dim);
-}
-.rail .row:hover { background: var(--raised); }
-.rail .row.active {
-  background: var(--raised); color: var(--text);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-/* flex-basis auto + min-width 0: with a basis of 0 the name never grew (the age's
-   margin-left:auto below swallowed the free space), so it collapsed to zero width
-   and the session name simply vanished whenever the row carried a tag. */
-.rail .row .name { flex: 1 1 auto; min-width: 0; }
-/* the same boxed CC/SH badge the cards use (mockup rail rows) */
-.rail .row .bkind {
-  font-family: var(--mono); font-size: .58rem; font-weight: 700;
-  letter-spacing: .08em; text-transform: uppercase; flex: none;
-  padding: .05rem .28rem; border-radius: 4px;
-  border: 1px solid var(--border-st); color: var(--text-faint);
-}
-.rail .row .bkind.cc {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.rail .row .bkind.gr {
-  color: #e8825a;
-  border-color: color-mix(in srgb, #e8825a 45%, transparent);
-  background: color-mix(in srgb, #e8825a 12%, transparent);
-}
-.rail .row .bkind.oc {
-  color: #b58cf0;
-  border-color: color-mix(in srgb, #b58cf0 45%, transparent);
-  background: color-mix(in srgb, #b58cf0 12%, transparent);
-}
-.rail .row .bkind.hm {
-  color: #5cc0b0;
-  border-color: color-mix(in srgb, #5cc0b0 45%, transparent);
-  background: color-mix(in srgb, #5cc0b0 12%, transparent);
-}
-/* Who created a session. Rendered for admins only -- everyone else sees just
-   their own sessions, so a chip on each saying "you" would be noise. Muted, so
-   it reads as metadata beside the name rather than competing with the tags. */
-.bowner, .rowner {
-  flex: none; font-family: var(--mono); color: var(--text-faint);
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.bowner { font-size: .6rem; font-weight: 600; letter-spacing: .04em;
-          padding: .05rem .28rem; max-width: 7rem; }
-.rowner { font-size: .58rem; padding: 0 .25rem; max-width: 4.5rem; }
-/* The rail row swaps the age out for its action buttons on hover; the owner goes
-   with it, so the name keeps the width it has now. */
-.rail .row:hover .rowner { display: none; }
-/* At 250px the rail cannot fit name + owner + tags, and the name is what you are
-   actually reading -- with all three the name collapsed to "escap…". The per-row
-   tag chip gives way: the group header directly above already names that tag, so
-   it is the most redundant thing in the row. (Mobile dropped it for exactly this
-   reason; this just applies the same judgement to the desktop width.) */
-.rail .row .tags { display: none; }
-
-/* pane bar: state dot + name + host, mockup form */
-.pane-head .dot { margin-right: 2px; }
-.rail .row .rw {
-  /* no margin-left:auto -- the name's flex-grow already pushes this right, and
-     the auto margin was what starved the name of space. */
-  font-size: .66rem; color: var(--text-faint);
-  font-variant-numeric: tabular-nums; flex: none;
-}
-.rail .row:hover .rw { display: none; } /* make room for the row actions on hover */
-/* The row actions are visibility:hidden by default, which still reserves their
-   width -- enough to overflow a 230px rail and shrink the name to nothing. Take
-   them out of the flow until hover so the session name actually has room.
-   (item 22: one ⋮ + the inline ✕ replaced five icon buttons, which sat right
-   where people were aiming when picking a row.) */
-.rail .row .row-more, .rail .row .row-del { display: none; }
-.rail .row:hover .row-more,
-.rail .row:hover .row-del { display: inline-block; visibility: visible; }
-/* Touch has no hover, so ⋮/✕ must be always there. Placed after the base rules
-   on purpose: same specificity, later wins. The old mobile override sat earlier
-   in the file and only set `visibility`, so `display: none` silently won and
-   the buttons never actually showed on a phone. */
-@media (hover: none) {
-  .rail .row .row-more, .rail .row .row-del { display: inline-block; visibility: visible; }
-  .rail .row .rw { display: none; }  /* the permanent version of the hover swap */
-}
-
-/* --- pane tabs above the terminal (mockup .ptabs/.ptab) -------------------- */
-.ptabs {
-  flex: none; display: flex; align-items: center; gap: .25rem;
-  padding: .4rem .55rem; background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto; scrollbar-width: none;
-}
-.ptabs::-webkit-scrollbar { display: none; }
-.ptab {
-  display: flex; align-items: center; gap: .45rem;
-  font-family: var(--mono); font-size: .78rem; padding: .32rem .62rem;
-  border-radius: 7px 7px 0 0; color: var(--text-dim);
-  border: 1px solid transparent; border-bottom: none;
-  cursor: pointer; white-space: nowrap;
-}
-.ptab:hover { color: var(--text); }
-.ptab.on { color: var(--text); background: var(--panel); border-color: var(--border); }
-.ptab .ptab-nm { overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
-.ptab .x {
-  color: var(--text-faint); margin-left: .2rem; background: none;
-  border: none; cursor: pointer; font-size: .74rem; padding: 0 2px; line-height: 1;
-}
-.ptab .x:hover { color: var(--st-blocked); }
-.ptab-add { color: var(--text-faint); }
-.ptab-add:hover { color: var(--accent); }
-
-/* files collapsed to the mockup's slim footer drawer (.files-foot) */
-.main.files-collapsed .files-head {
-  padding: .45rem .75rem; background: var(--panel);
-  font-family: var(--mono); font-size: .74rem; color: var(--text-dim);
-}
-
-.pane-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; background: var(--surface);
-  border-bottom: 1px solid var(--border); font-size: 13px;
-}
-.pane-head .muted, .muted { color: var(--muted); }
-.pane-head .mono { font-family: var(--mono); font-size: 12px; }
-/* The file browser is its own column: the drag bar, header, upload strip, and
-   the list. Desktop keeps it as a split below the terminal (drag to resize);
-   phone re-anchors this same block as a bottom sheet (see the 820px query). */
-.files-pane { display: flex; flex-direction: column; flex: none; min-height: 0; }
-.files-head { border-top: 1px solid var(--border); }
-.files-head .upload, #files-refresh { flex-shrink: 0; }
-.files-toggle { flex-shrink: 0; padding: 2px 7px; font-size: 11px; line-height: 1; }
-#files-host { flex-shrink: 0; }
-.path-input {
-  flex: 1; min-width: 0; padding: 4px 8px;
-  font-family: var(--mono); font-size: 12px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-}
-.path-input:focus { outline: none; border-color: var(--accent); }
-/* breadcrumb path bar (swaps with .path-input for manual entry) */
-.files-crumbs {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 1px;
-  overflow-x: auto; scrollbar-width: none; white-space: nowrap;
-  font-family: var(--mono); font-size: 12px; padding: 2px 4px; cursor: text;
-}
-.files-crumbs::-webkit-scrollbar { display: none; }
-.files-crumbs[hidden] { display: none; }
-.crumb {
-  background: transparent; border: none; color: var(--muted); cursor: pointer;
-  padding: 3px 5px; border-radius: 5px; font: inherit; flex-shrink: 0;
-}
-.crumb:hover { background: var(--accent-bg); color: var(--accent); }
-.crumb.current { color: var(--text); cursor: default; }
-.crumb.current:hover { background: transparent; color: var(--text); }
-.crumb-sep { color: var(--faint); flex-shrink: 0; }
-
-/* the terminal area holds one or two panes side by side */
-.term-row { flex: 1; min-height: 120px; display: flex; min-width: 0; }
-.pane { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
-/* grid layout (quadrant-style); columns/rows set inline by relayout() */
-.term-row.grid { display: grid; gap: 2px; background: var(--border); }
-/* 3+ panes in a row get a thin separator (the 2-pane case uses .pane-divider) */
-.term-row:not(.grid) .pane + .pane { border-left: 1px solid var(--border); }
-/* drag a pane by its header to rearrange */
-.term-row.multi .pane-head { cursor: grab; }
-.term-row.multi .pane-head:active { cursor: grabbing; }
-.pane.dragging { opacity: 0.45; }
-.pane.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
-/* call-to-action shown in an empty pane (hidden once a session attaches) */
-.pane-hint {
-  position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
-  padding: 0 16px; text-align: center; pointer-events: none;
-  color: var(--faint); font-size: 13px; display: none;
-}
-.pane.empty .pane-hint { display: block; }
-.pane.empty.focused .pane-hint { color: var(--accent); }
-/* draggable bar between the two panes (mirrors .hsplit); drag sets their ratio */
-.pane-divider {
-  position: relative; flex-shrink: 0; width: 7px;
-  cursor: col-resize; background: var(--surface);
-  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
-}
-.pane-divider::after {
-  content: ""; position: absolute; left: 50%; top: 50%;
-  width: 2px; height: 28px; transform: translate(-50%, -50%);
-  border-radius: 2px; background: var(--faint);
-}
-.pane-divider:hover { background: var(--accent-bg); }
-.pane-divider:hover::after { background: var(--accent); }
-.pane-term { flex: 1; min-height: 0; background: #202628; padding: 6px 8px; }
-.pane-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pane-close {
-  flex-shrink: 0; border: none; background: none; color: var(--muted);
-  cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 4px;
-}
-.pane-close:hover { background: var(--accent-bg); color: var(--text); }
-/* the focus ring + dimming only matter once there's more than one pane */
-.term-row.multi .pane.focused .pane-head { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-bg); }
-.term-row.multi .pane.focused .pane-title strong { color: var(--accent); }
-.term-row.multi .pane:not(.focused) .pane-head { opacity: 0.5; }
-
-.vsplit {
-  position: relative; flex-shrink: 0; height: 7px;
-  cursor: row-resize; background: var(--surface);
-  border-top: 1px solid var(--border);
-}
-.vsplit::after {
-  content: ""; position: absolute; left: 50%; top: 50%;
-  width: 28px; height: 2px; transform: translate(-50%, -50%);
-  border-radius: 2px; background: var(--faint);
-}
-.vsplit:hover { background: var(--accent-bg); }
-.vsplit:hover::after { background: var(--accent); }
-body.resizing { cursor: row-resize; user-select: none; }
-
-.hsplit {
-  position: relative; flex-shrink: 0; width: 7px;
-  cursor: col-resize; background: var(--surface);
-  border-left: 1px solid var(--border);
-}
-.hsplit::after {
-  content: ""; position: absolute; left: 50%; top: 50%;
-  width: 2px; height: 28px; transform: translate(-50%, -50%);
-  border-radius: 2px; background: var(--faint);
-}
-.hsplit:hover { background: var(--accent-bg); }
-.hsplit:hover::after { background: var(--accent); }
-body.resizing-x { cursor: col-resize; user-select: none; }
-
-.files {
-  height: 200px; overflow-y: auto; font-family: var(--mono); font-size: 12.5px;
-  --w-size: 80px; --w-date: 150px;
-}
-.files.drop-target { outline: 2px dashed var(--accent); outline-offset: -3px; background: var(--accent-bg); }
-.files-head.drop-target { outline: 2px dashed var(--accent); outline-offset: -3px; background: var(--accent-bg); }
-/* slim upload-progress strip under the files header */
-.upload-bar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 5px 12px; background: var(--surface);
-  border-top: 1px solid var(--border); font-size: 11px; color: var(--muted);
-}
-.upload-bar[hidden] { display: none; }
-.upbar { flex: 1; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
-.upbar-fill { height: 100%; width: 0%; background: var(--accent); border-radius: 2px; transition: width 0.15s linear; }
-
-.files-cols, .file-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--w-size) var(--w-date);
-  align-items: center;
-}
-.files-cols {
-  position: sticky; top: 0; z-index: 2;
-  background: var(--surface); border-bottom: 1px solid var(--border);
-  font-size: 11px; color: var(--muted);
-}
-.fcol {
-  position: relative; padding: 6px 12px; cursor: pointer; user-select: none;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.fcol:hover, .fcol.active { color: var(--text); }
-.fcol-size, .fcol-date { text-align: right; }
-.fcol .sort-ind { color: var(--accent); }
-.col-resize { position: absolute; left: -4px; top: 0; width: 8px; height: 100%; cursor: col-resize; }
-.col-resize:hover { background: var(--accent); }
-body.col-resizing { cursor: col-resize; user-select: none; }
-
-.file-row { cursor: pointer; user-select: none; }
-.file-row:hover { background: var(--surface-2); }
-.file-row.selected { background: var(--accent-bg); }
-.file-row.selected .fn-text { color: var(--accent); }
-.file-row.cut { opacity: 0.55; }
-#files:focus { outline: none; }
-.inline-edit {
-  flex: 1; min-width: 0; padding: 2px 6px;
-  font-family: var(--mono); font-size: 12.5px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--accent); border-radius: 5px;
-}
-.inline-edit:focus { outline: none; }
-.file-row .fname { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; }
-.file-row .fn-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-row .fsize { color: var(--faint); text-align: right; padding: 6px 8px; white-space: nowrap; }
-.file-row .fdate { color: var(--faint); font-size: 11px; text-align: right; padding: 6px 12px; white-space: nowrap; }
-.file-row .ficon { color: var(--muted); width: 12px; flex-shrink: 0; }
-.file-row.dir .ficon { color: var(--accent); }
-.file-msg { display: flex; align-items: center; gap: 8px; padding: 10px 14px; color: var(--muted); }
-
-.statusbar {
-  display: flex; gap: 14px; flex-wrap: wrap;
-  padding: 6px 12px; background: var(--surface);
-  border-top: 1px solid var(--border);
-  font-size: 11px; color: var(--muted);
-}
-.statusbar .ok { color: var(--green); }
-
-/* new-session inline form (replaces the old prompt() flow) */
-.popover {
-  position: absolute; top: calc(100% + 6px); right: 12px; z-index: 20;
-  width: 250px; padding: 12px;
-  display: flex; flex-direction: column; gap: 9px;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-}
-.popover[hidden] { display: none; }
-.form-row { display: flex; align-items: center; gap: 8px; }
-.form-row[hidden] { display: none; }
-.form-row label {
-  width: 42px; flex-shrink: 0;
-  font-size: 10.5px; letter-spacing: 0.03em; text-transform: uppercase;
-  color: var(--faint);
-}
-.form-row select, .form-row input {
-  flex: 1; min-width: 0; padding: 6px 8px;
-  font-family: var(--mono); font-size: 12px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-}
-.form-row select:focus, .form-row input:focus { outline: none; border-color: var(--accent); }
-#ns-host option.offline { color: var(--faint); }
-.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
-/* filled, as in the mockup (.btn.pri) */
-.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+/* ---------- app frame ---------- */
+#app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; font: 700 1.05rem var(--mono); letter-spacing: -.02em; cursor: pointer; }
+.brand b { color: var(--accent); border: 1.5px solid var(--accent); border-radius: 4px; padding: 0 2px; margin: 0 1px; }
+.spacer { flex: 1; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--r); border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); font-size: .86rem; white-space: nowrap; }
+.btn:hover { background: var(--raised); color: var(--text); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
-/* version, parked at the foot of the settings panel (the status bar that used to
-   carry it went away with the v2 chrome) */
-.set-foot {
-  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
-  text-align: right; font-size: 11px; color: var(--text-faint);
-}
-.form-row .ns-add { flex: 0 0 auto; padding: 5px 9px; line-height: 1; }
-.ah-error { min-height: 14px; font-size: 11px; color: #e24b4a; }
+.btn.danger { color: var(--danger); border-color: #4a2630; }
+.btn.danger:hover { background: var(--danger-bg); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.icon { padding: 6px 8px; }
+.btn.sm { padding: 3px 8px; font-size: .78rem; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--r); border: 1px solid var(--border); background: var(--bg); color: var(--text-faint); font: .82rem var(--mono); min-width: 220px; }
+.pill kbd { margin-left: auto; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--accent-bg); color: var(--accent); display: grid; place-items: center; font: 600 .78rem var(--mono); border: 1px solid var(--border-st); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); display: inline-block; flex: none; }
+.dot.working { background: var(--st-working); } .dot.blocked { background: var(--st-blocked); }
+.dot.stuck { background: var(--st-stuck); } .dot.done { background: var(--st-done); } .dot.idle { background: var(--st-idle); }
+.dot.pulse { animation: pulse 1.8s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+.kind { font: 700 .62rem var(--mono); letter-spacing: .04em; padding: 1px 5px; border-radius: 4px; border: 1px solid; flex: none; }
+.kind.cc { color: #7cb3e8; border-color: #2b4d6e; background: #16283a; }
+.kind.gr { color: #c9b4f0; border-color: #4a3b73; background: #241d38; }
+.kind.oc { color: #8fd2c8; border-color: #2d5c57; background: #152b29; }
+.kind.hm { color: #e8c57c; border-color: #6a5425; background: #2d2512; }
+.kind.sh { color: var(--text-dim); border-color: var(--border-st); background: var(--surface-2); }
 
-/* a heading inside a settings panel, so the flat list of rows reads as groups */
-.form-sect {
-  margin-top: 6px; padding-top: 9px; border-top: 1px solid var(--border);
-  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--text-faint);
-}
-/* status text sharing a row with its button; takes the space the button doesn't */
-.form-note {
-  flex: 1; min-width: 0; font-size: 11px; color: var(--text-faint);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.form-note.ok { color: var(--st-done, var(--accent)); }
-.form-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-.form-note.warn { color: #e0a33a; }
-.form-row .btn { flex: 0 0 auto; }
-/* the gear wears a dot when a newer release is out -- the whole notification.
-   No modal: this is a tool people leave open for days. */
-#settings.has-update { position: relative; }
-#settings.has-update::after {
-  content: ""; position: absolute; top: 3px; right: 3px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--accent); box-shadow: 0 0 0 2px var(--panel);
-}
+/* ---------- layout ---------- */
+.layout { display: flex; flex: 1; min-height: 0; }
+.rail { width: 300px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
+.rail-scroll { flex: 1; overflow: auto; padding: 8px 6px; }
+.rail-foot { padding: 6px 12px; border-top: 1px solid var(--border); color: var(--text-faint); font: .72rem var(--mono); display: flex; gap: 8px; align-items: center; }
+.group { margin-bottom: 6px; }
+.group-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: var(--text-faint); font: 600 .68rem var(--mono); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
+.group-head .chev { width: 10px; }
+.group-head .count { margin-left: auto; font-weight: 400; }
+.row { display: flex; align-items: center; gap: 8px; margin-left: 10px; padding: 7px 8px; border-radius: var(--r); cursor: pointer; font: .8rem var(--mono); color: var(--text); position: relative; }
+.row:hover { background: var(--raised); }
+.row.selected { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .host { color: var(--text-faint); font-size: .72rem; }
+.row .age { color: var(--text-faint); font-size: .7rem; min-width: 2.4em; text-align: right; }
+.row .fav { color: var(--st-blocked); font-size: .72rem; }
+.row .more { width: 22px; height: 22px; border-radius: 4px; color: var(--text-faint); display: grid; place-items: center; visibility: hidden; }
+.row:hover .more, .row.menu-open .more { visibility: visible; }
+.row .more:hover { background: var(--border); color: var(--text); }
+@media (hover: none) { .row .more { visibility: visible; } }
 
-.statusbar .kbd-hint { margin-left: auto; font-family: var(--mono); color: var(--faint); }
-#version-foot { color: var(--faint); font-size: 11px; }
-#version-foot.stale { color: var(--amber); }
+/* ---------- popover menu ---------- */
+.menu { position: fixed; z-index: 150; min-width: 220px; background: var(--panel); border: 1px solid var(--border-st); border-radius: var(--r-lg); box-shadow: 0 14px 30px -12px rgba(0,0,0,.7); padding: 5px; font: .8rem var(--sans); }
+.menu .item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r); color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+.menu .item:hover { background: var(--raised); color: var(--text); }
+.menu .item .ico { width: 16px; text-align: center; color: var(--text-faint); font-family: var(--mono); }
+.menu .item kbd { margin-left: auto; }
+.menu .item.danger { color: var(--danger); }
+.menu .item.danger:hover { background: var(--danger-bg); }
+.menu .sep { height: 1px; background: var(--border); margin: 4px 6px; }
+.menu .hint { padding: 4px 10px 6px; color: var(--text-faint); font-size: .72rem; }
 
-/* command palette (double-tap Shift) */
-.palette-overlay {
-  position: fixed; inset: 0; z-index: 50;
-  display: flex; align-items: flex-start; justify-content: center;
-  padding-top: 12vh; background: rgba(1, 4, 9, 0.6);
-}
-.palette-overlay[hidden] { display: none; }
-.palette {
-  width: 520px; max-width: calc(100vw - 32px);
-  display: flex; flex-direction: column;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
-  overflow: hidden;
-}
-#palette-input {
-  padding: 13px 15px; border: none; border-bottom: 1px solid var(--border);
-  background: transparent; color: var(--text);
-  font-family: var(--mono); font-size: 14px;
-}
-#palette-input:focus { outline: none; }
-.palette-list { max-height: 320px; overflow-y: auto; padding: 6px; }
-.palette-row {
-  display: flex; align-items: center; gap: 9px;
-  padding: 8px 10px; border-radius: 6px; cursor: pointer;
-  font-family: var(--mono); font-size: 12.5px; color: var(--text);
-}
-.palette-row:hover { background: var(--surface); }
-.palette-row.active { background: var(--accent-bg); }
-.palette-row .kind { color: var(--faint); width: 12px; text-align: center; }
-.palette-row.active .kind { color: var(--accent); }
-.palette-row .ptext { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.palette-row .hl { color: var(--accent); font-weight: 600; }
-.palette-row .dot { flex-shrink: 0; }
-.palette-row .pkill {
-  flex-shrink: 0; margin-left: 8px; padding: 0 4px;
-  background: transparent; border: none; color: var(--faint);
-  cursor: pointer; font-size: 11px; visibility: hidden;
-}
-.palette-row:hover .pkill, .palette-row.active .pkill { visibility: visible; }
-.palette-row .pkill:hover { color: #e24b4a; }
-.palette-empty { padding: 14px 12px; color: var(--faint); font-family: var(--mono); font-size: 12px; }
-.palette-hint {
-  display: flex; gap: 14px; justify-content: flex-end;
-  padding: 7px 12px; border-top: 1px solid var(--border);
-  font-size: 10.5px; color: var(--faint);
-}
+/* ---------- panes ---------- */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.panes { flex: 1; min-height: 0; display: flex; }
+.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+.pane + .divider { width: 5px; flex: none; background: var(--surface); border-left: 1px solid var(--border); border-right: 1px solid var(--border); cursor: col-resize; }
+.pane-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); font: .8rem var(--mono); color: var(--text-dim); }
+.pane.focused .pane-head { box-shadow: inset 0 2px 0 var(--accent); }
+.pane-head .name { color: var(--text); font-weight: 600; }
+.pane-head .sub { color: var(--text-faint); }
+.pane-head .actions { margin-left: auto; display: flex; gap: 2px; }
+.pane-head .actions .btn { padding: 2px 6px; font-size: .78rem; }
+.term { flex: 1; min-height: 0; padding: 6px 4px 4px 10px; overflow: hidden; position: relative; background: var(--term-bg); }
+.relaunch { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: .8rem; color: var(--text-dim); }
+.relaunch .btn { padding: 3px 9px; font-size: .78rem; }
 
-/* fleet broadcast */
-#fleet.active { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
-#board-toggle.active { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
-.broadcast {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 9px 10px; border-top: 1px solid var(--border);
-}
-.broadcast[hidden] { display: none; }
-.bcast-row { display: flex; gap: 6px; }
-#bcast-input {
-  flex: 1; min-width: 0; padding: 6px 8px;
-  font-family: var(--mono); font-size: 12px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-}
-#bcast-input:focus { outline: none; border-color: var(--accent); }
-.bcast-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.bcast-status { font-size: 10.5px; }
-.bcast-clear { background: transparent; border: none; padding: 0; cursor: pointer; font-size: 10.5px; color: var(--faint); }
-.bcast-clear:hover { color: var(--accent); }
-.rowcheck { margin: 0 1px 0 0; flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }
+/* ---------- drawer ---------- */
+.drawer { flex: none; background: var(--surface); border-top: 1px solid var(--border); }
+.drawer-handle { display: flex; align-items: center; gap: 10px; padding: 5px 12px; font: .78rem var(--mono); color: var(--text-faint); cursor: pointer; }
+.drawer-handle .crumbs { color: var(--text-dim); }
+.drawer-handle .crumbs b { color: var(--text); font-weight: 600; }
+.drawer-handle .actions { margin-left: auto; display: flex; gap: 6px; }
+.drawer.open .drawer-body { display: block; }
+.drawer-body { display: none; height: 240px; overflow: auto; border-top: 1px solid var(--border); }
+.ftable { width: 100%; border-collapse: collapse; font: .8rem var(--mono); }
+.ftable th { text-align: left; font-weight: 500; color: var(--text-faint); padding: 5px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+.ftable td { padding: 5px 12px; color: var(--text-dim); }
+.ftable tr:hover td { background: var(--raised); }
+.ftable td.n { color: var(--text); } .ftable td.r { text-align: right; }
 
-/* session rows: kill stays inline; everything else lives behind the ⋮ */
-.row-del {
-  flex-shrink: 0; padding: 0 4px;
-  background: transparent; border: none; color: var(--faint);
-  font-size: 11px; cursor: pointer; visibility: hidden;
-}
-.row-more {
-  flex-shrink: 0; padding: 0 4px;
-  background: transparent; border: none; color: var(--faint);
-  font-size: 13px; line-height: 1; cursor: pointer; visibility: hidden;
-}
-.row.session:hover .row-more, .row.session:hover .row-del { visibility: visible; }
-.row-more:hover { color: var(--accent); }
-.row-del:hover { color: #e24b4a; }
-/* the row overflow menu (item 22). One popover per row; LABELLED rows, since
-   the whole complaint was icon-precision — bare glyphs in a menu re-create it.
-   Fixed-position (anchored by JS) so it escapes the rail's scroll container. */
-.row-menu {
-  position: fixed; z-index: 90; min-width: 178px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .55);
-  padding: .25rem; font-family: var(--mono);
-}
-.row-menu-item {
-  display: flex; gap: .4rem; align-items: center;
-  padding: .4rem .55rem; border-radius: 6px; cursor: pointer;
-  font-size: .76rem; color: var(--text-dim); white-space: nowrap;
-}
-.row-menu-item:hover { background: var(--raised); color: var(--text); }
-/* a favorite's star on a rail row is a state MARK (item 22: marking is not an
-   action), so unlike the row buttons it is always visible and takes no click */
-.row .favmark { flex: none; color: var(--st-blocked); font-size: .7rem; line-height: 1; }
-/* one-line note under a form row (why a field doesn't apply until a restart) */
-.form-hint { font-size: .72rem; color: var(--text-faint); margin: -.2rem 0 .7rem; }
-.form-hint code { font-family: var(--mono); font-size: .95em; }
-/* board card star: sits in the card header, right of the name/host.
-   The toggle — clicking a star to favorite/unfavorite stays (item 21). */
-.bcard .star {
-  margin-left: auto; flex-shrink: 0; padding: 0 3px;
-  background: transparent; border: none; color: var(--text-faint);
-  font-size: .82rem; line-height: 1; cursor: pointer;
-}
-.bcard .star:hover { color: var(--text); }
-.bcard .star.on { color: var(--st-blocked); }
-/* the header favorites menu: right-aligned so it never overflows the edge */
-.favmenu { left: auto; right: 0; width: 284px; }
-.favmenu .favstar { color: var(--st-blocked); width: 1em; text-align: center; flex: none; }
-.favmenu .favhost { color: var(--text-faint); font-size: .7rem; flex: none; }
-.favmenu .favact { margin-left: auto; color: var(--accent); font-size: .7rem; flex: none; }
-.favmenu .favrow.live { opacity: .92; }
-.favmenu .favrow.live .favact { color: var(--st-working); }
-/* the deliberate end of a launcher (item 23) — quiet until you look for it */
-.favmenu .favforget {
-  flex: none; margin-left: .4rem; padding: 0 3px;
-  background: transparent; border: none; color: var(--text-faint);
-  font-size: .72rem; line-height: 1; cursor: pointer; visibility: hidden;
-}
-.favmenu .favrow:hover .favforget { visibility: visible; }
-.favmenu .favforget:hover { color: #e24b4a; }
-.favmenu .favmenu-h { display: flex; align-items: baseline; justify-content: space-between; padding: .1rem .5rem .4rem; }
-.favmenu .favmenu-h b { font: 600 .82rem var(--sans); color: var(--text); }
-.favmenu .favmenu-h .sub { font: 11px var(--mono); color: var(--text-faint); }
-.favmenu .favmenu-empty { padding: .5rem; font: 12px var(--mono); color: var(--text-faint); }
-/* the + New "save to favorites" checkbox row */
-.form-row.fav-check { cursor: pointer; align-items: center; gap: .5rem; padding: .42rem .45rem; }
-.form-row.fav-check:hover { background: var(--raised); border-radius: 6px; }
-.form-row.fav-check input[type=checkbox] { flex: none; width: 14px; height: 14px; accent-color: var(--st-blocked); cursor: pointer; }
-.form-row.fav-check .fav-check-lbl { color: var(--text-dim); font-family: var(--mono); font-size: .78rem; }
-.form-row.fav-check:hover .fav-check-lbl { color: var(--text); }
-.modal-overlay {
-  position: fixed; inset: 0; z-index: 50;
-  display: flex; align-items: flex-start; justify-content: center;
-  padding-top: 16vh; background: rgba(1, 4, 9, 0.6);
-}
-.modal-overlay[hidden] { display: none; }
-.edit-popover {
-  width: 280px; padding: 14px;
-  display: flex; flex-direction: column; gap: 10px;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
-}
+/* ---------- dialogs ---------- */
+.scrim { position: fixed; inset: 0; background: rgba(4,6,9,.6); display: grid; place-items: center; z-index: 100; }
+.dialog { width: min(560px, 94vw); background: var(--panel); border: 1px solid var(--border-st); border-radius: 12px; box-shadow: 0 30px 60px -20px rgba(0,0,0,.8); overflow: hidden; }
+.dialog.wide { width: min(760px, 94vw); }
+.dialog-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px 10px; }
+.dialog-head h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+.dialog-head .close { margin-left: auto; color: var(--text-faint); font-size: 1.1rem; padding: 2px 6px; border-radius: 4px; }
+.dialog-head .close:hover { background: var(--raised); color: var(--text); }
+.dialog-body { padding: 4px 18px 16px; }
+.dialog-foot { display: flex; gap: 8px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--surface); }
+.dialog-foot .spacer { flex: 1; }
+.tabs { display: flex; gap: 2px; padding: 0 18px; border-bottom: 1px solid var(--border); }
+.tab { padding: 8px 12px; color: var(--text-dim); font-size: .86rem; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
+.tab.active { color: var(--text); border-color: var(--accent); }
+.tab .badge { margin-left: 6px; font: .68rem var(--mono); color: var(--text-faint); }
 
-/* the terminal-settings modal has longer labels + checkboxes */
-#settings-form .edit-popover { width: 320px; gap: 8px; }
-#settings-form .form-row label { width: 86px; }
-#settings-form .form-row.check label { width: auto; flex: 1; }
-#settings-form .form-row.check input {
-  flex: 0 0 auto; width: 16px; height: 16px; padding: 0; margin: 0;
-  background: none; border: none; accent-color: var(--accent); cursor: pointer;
-}
+/* ---------- forms ---------- */
+.field { display: grid; grid-template-columns: 110px 1fr; gap: 10px 14px; align-items: center; padding: 7px 0; }
+.field label { color: var(--text-dim); font-size: .84rem; }
+.field .help { grid-column: 2; color: var(--text-faint); font-size: .74rem; margin-top: -4px; }
+.input, .select { width: 100%; padding: 7px 10px; border-radius: var(--r); border: 1px solid var(--border); background: var(--bg); color: var(--text); font: .86rem var(--mono); }
+.input::placeholder { color: var(--text-faint); }
+.input:focus, .select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,155,213,.18); }
+.inline { display: flex; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.seg button { padding: 6px 12px; font-size: .82rem; color: var(--text-dim); border-right: 1px solid var(--border); }
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--accent-bg); color: var(--text); }
+.check { display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: .84rem; cursor: pointer; }
+.check i { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--border-st); background: var(--bg); display: inline-grid; place-items: center; font-style: normal; font-size: .7rem; color: var(--accent-ink); }
+.check.on i { background: var(--accent); border-color: var(--accent); }
+.switch { width: 34px; height: 20px; border-radius: 10px; background: var(--border-st); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--text); transition: left .15s; }
+.switch.on { background: var(--accent); } .switch.on::after { left: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: .72rem var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-st); color: var(--text-dim); background: var(--surface-2); }
+.chip.x::after { content: " ×"; color: var(--text-faint); }
+.table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.table th { text-align: left; font-weight: 500; color: var(--text-faint); font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.table td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); vertical-align: middle; }
+.table td.n { color: var(--text); font-family: var(--mono); }
+.table tr:last-child td { border-bottom: 0; }
+.note { padding: 10px 12px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim); font-size: .8rem; }
+.note.warn { border-color: #5a4418; background: #2a2212; color: #e5c37c; }
+.cmdline { font: .78rem var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); padding: 6px 10px; }
+.toast { background: var(--panel); border: 1px solid var(--border-st); border-left: 3px solid var(--st-working); border-radius: var(--r); padding: 8px 12px; font-size: .82rem; color: var(--text); box-shadow: 0 10px 24px -10px rgba(0,0,0,.7); z-index: 200; }
+.toast.warn { border-left-color: var(--st-blocked); }
 
-/* toasts */
-.toasts {
-  position: fixed; right: 16px; bottom: 16px; z-index: 60;
-  display: flex; flex-direction: column; gap: 8px; max-width: 320px;
-}
+/* ---------- v3 app additions (not in the mockups) ---------- */
+/* One rule closes the whole "display beats [hidden]" trap (it shipped twice in
+   v2): anything with the hidden attribute is gone, whatever its class says. */
+[hidden] { display: none !important; }
+body { overflow: hidden; }
+.term .xterm { height: 100%; }
+.term .xterm-viewport { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent; }
+.pane-empty { flex: 1; display: grid; place-content: center; gap: 6px; text-align: center; color: var(--text-dim); font-size: .9rem; background: var(--term-bg); }
+.pane-empty .dim, .rail-empty .dim, .dim { color: var(--text-faint); }
+.relaunch .spacer { flex: 1; }
+.relaunch .flag { opacity: .7; font-family: var(--mono); }
+.rail-empty { padding: 24px 12px; text-align: center; color: var(--text-dim); font-size: .85rem; }
+.rail-foot .conn { margin-left: auto; }
+.rail-foot .conn.ok { color: var(--st-working); }
+.rail-foot .conn.bad { color: var(--st-blocked); }
+.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+button.more { padding: 0; }
+.tagpick .ico { color: var(--text-faint); }
+.tagpick .n { color: var(--text-faint); font: .74rem var(--mono); }
+.topbar .slots { display: flex; gap: 8px; align-items: center; }
+button.avatar { padding: 0; cursor: pointer; }
+.menu .item .sub { margin-left: 6px; color: var(--text-faint); font: .72rem var(--mono); }
+.menu .item.disabled { opacity: .45; cursor: default; }
+.menu .item.disabled:hover { background: none; color: var(--text-dim); }
+.toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; z-index: 200; pointer-events: none; }
+.toast.error { border-left-color: var(--danger); }
+.dialog-body p { line-height: 1.5; }
 
-/* terminal right-click copy/paste menu */
-.ctx-menu {
-  position: fixed; z-index: 70; min-width: 110px; padding: 4px;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
-  display: flex; flex-direction: column;
-}
-.ctx-menu[hidden] { display: none; }
-.ctx-item {
-  background: transparent; border: none; color: var(--text); cursor: pointer;
-  text-align: left; padding: 6px 10px; border-radius: 5px; font-size: 12.5px;
-}
-.ctx-item:hover { background: var(--accent-bg); color: var(--accent); }
-.ctx-item.disabled { color: var(--faint); pointer-events: none; }
-.ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
-.confirm-msg { font-size: 13px; padding: 4px 2px 10px; max-width: 320px; }
-.btn.danger { border-color: #e24b4a; color: #e24b4a; }
-.btn.danger:hover { background: #e24b4a; color: #fff; }
-.toast {
-  padding: 9px 12px; border-radius: 8px; font-size: 12px; cursor: pointer;
-  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-.toast.ok { border-color: var(--green); }
-.toast.warn { border-color: var(--amber); }
-.toast.error { border-color: #e24b4a; }
-.toast .t-title { font-family: var(--mono); margin-bottom: 3px; }
-.toast .t-line { color: var(--muted); font-family: var(--mono); }
-.toast .t-line.good { color: var(--green); }
-.toast .t-line.bad { color: var(--amber); }
-
-/* auth: login / first-run setup (a full, opaque cover -- the app behind it
-   stays inert until a session cookie is in hand) */
-.auth-overlay {
-  position: fixed; inset: 0; z-index: 80;
-  display: flex; align-items: center; justify-content: center; background: var(--bg);
-}
-.auth-overlay[hidden] { display: none; }
-.auth-card {
-  width: 320px; padding: 22px; display: flex; flex-direction: column; gap: 12px;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 12px; box-shadow: 0 18px 56px rgba(0, 0, 0, 0.6);
-}
-.auth-brand { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 18px; color: var(--text); }
-.auth-brand img { display: block; border-radius: 6px; }
-.auth-title { color: var(--muted); font-size: 13px; }
-.auth-card .form-row label { width: 78px; }
-.auth-card .form-row input { flex: 1; }
-.auth-msg { font-size: 12px; font-family: var(--mono); }
-.auth-msg[hidden] { display: none; }
-.auth-msg.bad { color: var(--amber); }
-.auth-hint { font-size: 11px; color: var(--faint); line-height: 1.45; }
-.auth-hint[hidden] { display: none; }
-
-/* account + user-management modal */
-.account-popover { width: 340px; }
-.acct-head { font-size: 13px; color: var(--muted); }
-.acct-section {
-  display: flex; flex-direction: column; gap: 8px;
-  border-top: 1px solid var(--border); padding-top: 10px;
-}
-/* The display:flex above defeats the hidden attribute unless this is here --
-   the same trap that once shipped an un-dismissable restore banner. It shipped
-   again here: openAccount() sets `hidden` on the users and network sections for
-   non-admins, and it did nothing, so a normal user saw both (the API still
-   refused them, and the fields showed placeholders rather than real config).
-   Keep this guard next to the rule. */
-.acct-section[hidden] { display: none; }
-.acct-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); }
-.account-popover .form-row label { width: 52px; }
-.acct-user-list { display: flex; flex-direction: column; gap: 5px; max-height: 180px; overflow: auto; }
-.acct-user-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.acct-user-row .acct-user-actions { margin-left: auto; display: flex; gap: 10px; }
-.acct-badge { font-size: 10px; color: var(--accent); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
-.linkish { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0; }
-.linkish:hover { color: var(--text); }
-.linkish.danger:hover { color: #e24b4a; }
-.acct-foot { justify-content: space-between; margin-top: 4px; }
-.acct-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
-.acct-hint .mono { color: var(--muted); }
-
-/* Indeterminate progress: the folder relay reports bytes moved but can't know
-   the total (a tar stream doesn't carry its size), so the bar slides instead of
-   claiming a percentage it doesn't have. */
-.upbar-fill.indeterminate {
-  animation: upbar-slide 1.1s ease-in-out infinite;
-}
-@keyframes upbar-slide {
-  0%   { margin-left: 0%;  }
-  50%  { margin-left: 65%; }
-  100% { margin-left: 0%;  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .upbar-fill.indeterminate { animation: none; }
-}
+/* sign-in cover */
+.auth-cover { position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; background: var(--bg); }
+.auth-card { width: min(360px, 92vw); display: flex; flex-direction: column; gap: 12px; padding: 24px; background: var(--panel); border: 1px solid var(--border-st); border-radius: 12px; }
+.auth-card .brand { font-size: 1.3rem; justify-content: center; cursor: default; }
+.auth-card h2 { margin: 0; font-size: 1rem; text-align: center; }
+.auth-card p { margin: 0; font-size: .8rem; }
+.auth-field { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--text-dim); }
+.auth-field .input { font-size: 16px; }            /* >= 16px: no zoom-on-focus on phones */
+.auth-msg { color: var(--danger); font-size: .82rem; }

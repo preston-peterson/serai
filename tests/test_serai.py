@@ -2625,6 +2625,10 @@ def test_every_hidden_toggled_element_survives_its_display_rule():
     web = Path(__file__).resolve().parent.parent / "web"
     html = (web / "index.html").read_text()
     css = (web / "style.css").read_text()
+    # v3 closes the whole class with one global rule; with it in place no class
+    # display can defeat the attribute, so there is nothing per-class to check.
+    if re.search(r"^\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;?\s*\}", css, re.M):
+        return
     classes = set()
     for tag in re.findall(r"<[a-zA-Z]+[^>]*\shidden[\s/>]", html):
         m = re.search(r'class="([^"]+)"', tag)
