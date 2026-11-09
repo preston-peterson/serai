@@ -25,3 +25,6 @@ secrets.*
 
 # audit reports (local only — see ~/git/github-best-practices)
 audits/
+
+# code knowledge graph output (tool-local, regenerable)
+graphify-out/

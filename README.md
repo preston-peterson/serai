@@ -46,8 +46,8 @@ drawer underneath.
 
 - **Terminals** attach over a websocket-backed PTY. Local and remote are the same
   code path — remote just wraps the tmux command in `ssh -t`. A dropped socket
-  reattaches to the same session automatically, because tmux kept it alive. Open
-  several as tabs, or split up to six panes.
+  reattaches to the same session automatically, because tmux kept it alive. Split
+  up to six panes (each with a tab above the terminals).
 - **Exiting a coding agent drops you to the prompt, it doesn't close the
   session.** `/exit` (or quitting opencode / Grok / Hermes) leaves the session
   alive sitting at a shell prompt, so you can relaunch the harness, use the
@@ -118,17 +118,19 @@ the command, so nothing you type there can run as a shell command.
 
 Both take effect when a session is *created* — tmux won't re-run a command for a
 session that already exists — so changing them on a running session needs a
-**restart**: `⟳` on its row, or **save & restart** in the edit dialog. That kills
-and recreates it, running exactly what the args say and nothing more — so put its
-resume flag in them if you want to pick up a prior conversation (`--resume` for
-Claude and Grok, `--continue` for OpenCode and Hermes). It asks first, and shows
-you the command line it's about to run, since anything running in the session is
-lost.
+**restart**: **⋮** on its rail row → restart, or **save & restart** in the edit
+dialog. That kills and recreates it, running exactly what the args say and
+nothing more — so put its resume flag in them if you want to pick up a prior
+conversation (`--resume` for Claude and Grok, `--continue` for OpenCode and
+Hermes). It asks first, and shows you the command line it's about to run, since
+anything running in the session is lost.
 
 **Saved profiles.** Creating a session remembers how to start it (host, kind,
 label, directory, tags, extra args). That profile survives `/exit` and a reboot.
 ✕ on a live session — or on a saved row in **jump to session** — forgets it, and
-it will not be offered again.
+it will not be offered again. A **favorite** is the exception: ✕ there ends the
+tmux session but keeps the saved profile, since a favorite is something you
+launch again. Forget one with the ✕ in the **★ Favorites** menu.
 
 **Resume is on demand**, not a banner and not a card in front of live work.
 **Jump to session** lists saved-but-not-live profiles (marked *saved*); picking
@@ -139,11 +141,12 @@ profile and defaults the session picker to resume. The board and rail only show
 what's running.
 
 **Favorites** mark the profiles you want one-click restore for. Check **save to
-favorites** in **+ New** — or the star on any board card or rail row — and the
-session joins the **★ Favorites** menu in the top bar: one click attaches it if
-it's running, or restores it if it's not. A favorite is just a saved profile with
-a flag, so it follows the same ownership rules and is forgotten with the profile
-when you ✕ it.
+favorites** in **+ New** — the star on a board card, or **⋮ → save to favorites**
+on a rail row — and the session joins the **★ Favorites** menu in the top bar:
+one click attaches it if it's running, or restores it if it's not. A favorite is
+just a saved profile with a flag, so it follows the same ownership rules. It
+survives ✕ — a favorite is a launcher, not a bookmark on a running session — and
+you forget one from the **★ Favorites** menu.
 
 ## On a phone
 
