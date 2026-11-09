@@ -9,6 +9,76 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [3.0.0]
+
+A rewrite of the terminal bridge and the web client. Sessions, saved profiles,
+favorites, accounts and settings carry over from 2.x unchanged.
+
+### Upgrading
+
+- **tmux 3.2 or newer is now required**, locally and on every remote host you
+  attach to: the new bridge uses control-mode flow control, added in 3.2.
+- Update the usual way (`./install.sh`, the one-liner, or ⚙ → Update now). Open
+  terminals reconnect on their own; tmux sessions are not touched.
+
+### Changed
+
+- **Terminals attach through tmux control mode (`tmux -C`) instead of a PTY.**
+  tmux streams each pane's own output to the browser, so the browser terminal
+  holds the pane's real scrollback and sees the app's own screen modes. This is
+  what fixes copy/paste and scrolling below. A session is created detached if
+  it is missing, then attached; a slow browser pauses that pane and gets a fresh
+  redraw instead of tmux dropping the client.
+- **Copy and paste work like a local terminal.** A plain drag selects (Shift+drag
+  when an app has the mouse), across the whole scrollback, in shells and agent
+  UIs alike. Ctrl+Shift+C / Ctrl+Insert / Cmd+C copy, and **Ctrl+C copies when
+  something is selected and interrupts when nothing is**. Paste is sent exactly
+  once. Copy-on-select and bracketed paste are opt-in settings.
+- **The attached view is the landing view**: the rail, up to two panes with a
+  draggable divider, and the files drawer, which follows the focused pane. The
+  board is an overview behind ⊞, with state chips to filter by.
+- **One form for + New and Edit**, with a stored **launch** choice per session
+  (new, continue last, or the resume picker) used everywhere serai starts an
+  agent again.
+- **A ★ Favorites panel**: reorder, attach or restore, remove, forget.
+- **Every row has one ⋮ menu** (edit, favorite, open in second pane, relaunch,
+  close), on the rail and the board, so nothing needs attaching first.
+- **Redesigned ⚙ Settings and Account dialogs**, in-page instead of browser
+  pop-ups. Changing your own password asks for the current one.
+- **The phone layout is new**: a session list grouped by state with live tails,
+  a full-screen terminal sized around the keyboard, a key bar with select and
+  paste, and native scrolling.
+- Remote panes on one host share a single ssh connection (`SERAI_SSH_MUX=0`
+  turns this off).
+- The page is split into ES modules with no build step, and xterm.js moves to
+  5.5.
+
+### Added
+
+- **▶ Relaunch**: an agent you exited is one click from running again, with its
+  launch choice and args.
+- *working* detection for OpenCode and Hermes.
+- Keyboard: Ctrl+Shift+N new session, Ctrl+Shift+1/2 focus a pane, arrow keys
+  in the rail, Shift+F10 for a row's menu.
+- The rail resizes by dragging its edge.
+
+### Removed
+
+- Fleet broadcast from the UI, and six-pane layouts.
+- The restore banner's API (`/api/sessions/exited`, `/api/sessions/restore`),
+  unused since 2.23.0.
+
+### Fixed
+
+- The file routes now refuse hosts that aren't in your ssh config, like every
+  other route.
+- The saved-session store takes a lock, so concurrent writers can no longer
+  lose an update.
+- A start directory or args containing `::` no longer corrupts the session list.
+- Sessions no longer inherit serai's own `SERAI_*` settings.
+- Session names that would split a tmux command (ending in `;`, or containing
+  control characters) are refused.
+
 ## [2.30.2]
 
 ### Fixed

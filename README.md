@@ -9,28 +9,38 @@ for persistence.
 
 When you run a dozen agents at once, the hard question stops being "where is my
 terminal" and becomes **"which of these needs me right now?"** serai answers that
-first: it opens on a board of every session, colour-coded by what each one is
-actually doing, with a few lines of live pane output on each card. Click one to
-attach.
+in the corner of your eye: a rail of every session sits beside your terminals,
+each row carrying a dot for what that session is actually doing, and a board
+overview shows them all at once with a few lines of live output on each card.
 
 It holds **none of your fleet's credentials** — remote work goes through your
-ssh-agent, and tmux keeps every session alive when you detach.
+ssh-agent, and tmux keeps every session alive when you close the tab.
 
-![The board: every session, grouped by state](docs/screenshots/board.png)
+![The attached view: rail, two panes, and the files drawer](docs/screenshots/attached.png)
 
 ## What it does
 
-**The board** is the landing view. One card per session, sorted so whatever needs
-you floats to the top, each showing a live preview of the pane so you can triage
-without attaching.
+**The attached view** is where you work. The rail on the left lists every
+session, grouped by tag, each with its state dot; click one to attach it. Up to
+**two panes** sit side by side (Shift+click a row, or **⋮ → Open in second
+pane**, for the second), with a divider you can drag; the rail's edge drags too.
+The **files drawer** underneath follows whichever pane has focus, opening on that
+session's host and directory.
+
+**The board** (⊞ in the top bar) is the overview: one card per session with a
+live tail of its pane, sorted so whatever needs you comes first, with a chip per
+state to filter by. Click a card to attach. serai remembers which view you left
+it on.
+
+![The board: every session, grouped by state](docs/screenshots/board.png)
 
 Every session reads as one of five states:
 
 | | meaning | how it's detected |
 |---|---|---|
-| **working** | busy right now | an agent whose status line says a turn is running (Claude today), or a shell with a non-shell process in the foreground, or fresh output. |
-| **blocked** | waiting on you | a prompt marker in the pane tail — a permission ask, `[sudo] password`, `(y/n)` |
-| **stuck** | looping | an agent repeating the same line in the pane tail, or holding an unchanged view across several polls while claiming to work (never a shell, and never a real `(y/n)`) |
+| **working** | busy right now | an agent whose status line says a turn is running (Claude, OpenCode, Hermes), a shell with a non-shell process in the foreground, or fresh output |
+| **needs you** | waiting on you | a prompt marker in the pane tail — a permission ask, `[sudo] password`, `(y/n)` |
+| **looping** | stuck | an agent repeating the same line in the pane tail, or holding an unchanged view across several polls while claiming to work (never a shell, and never a real `(y/n)`) |
 | **done** | finished, unread | a coding-agent session parked back at its prompt after recent activity, that you haven't opened |
 | **idle** | at rest | a shell at its prompt, or an agent dormant a while past the done window |
 
@@ -38,28 +48,36 @@ Detection is a heuristic, and deliberately a cheap one: it reuses the pane captu
 already taken for the preview plus two fields tmux hands over for free, so a large
 fleet costs no extra round trips. See [Tuning](#tuning) to adjust the windows.
 
-**The attached view** puts a compact rail of every session beside your terminals —
-grouped by tag, each row carrying its own state dot — with the file browser as a
-drawer underneath.
-
-![The attached view: rail, terminal, and file drawer](docs/screenshots/attached.png)
-
-- **Terminals** attach over a websocket-backed PTY. Local and remote are the same
-  code path — remote just wraps the tmux command in `ssh -t`. A dropped socket
-  reattaches to the same session automatically, because tmux kept it alive. Split
-  up to six panes (each with a tab above the terminals).
+- **Terminals** speak to tmux in its *control mode* (`tmux -C`), the way iTerm2
+  does: tmux streams each pane's own output to the browser rather than drawing a
+  screen for it. So the browser terminal holds the pane's real scrollback, and
+  selection, scrolling, and the clipboard behave like a local terminal's — in a
+  shell and inside an agent's full-screen UI alike. A dropped connection
+  reattaches by itself, because tmux kept the session alive.
 - **Exiting a coding agent drops you to the prompt, it doesn't close the
   session.** `/exit` (or quitting opencode / Grok / Hermes) leaves the session
-  alive sitting at a shell prompt, so you can relaunch the harness, use the
-  session as a plain shell, or walk away — the session stays on the board as
-  *done* instead of vanishing and needing a manual recreate. ✕ is still the
-  deliberate end.
+  alive at a shell prompt, and the pane offers **▶ Relaunch** to start the agent
+  again with its saved resume choice and args — or use the session as a plain
+  shell. It stays on the board as *done* in the meantime.
 - **Files** browses any host — local filesystem or SFTP — with cut/copy/paste,
   rename, delete, new folder, multi-select, and drag-and-drop upload. Copying
   between two hosts relays as a streamed tar, so a multi-GB tree moves at a fixed
   memory cost and reports bytes as it goes.
-- **Jump** (or double-tap `Shift`) fuzzy-finds any session by name.
-- **Fleet broadcast** sends one command line to several sessions at once.
+- **Jump** (Ctrl+Shift+P, or double-tap Shift) fuzzy-finds any session by name or
+  tag, running or saved, and offers to create one if nothing matches.
+
+## Copy and paste
+
+| | |
+|---|---|
+| **select** | drag; double-click for a word, triple-click for a line, Shift+click to extend. When an app has turned on mouse reporting, a plain drag goes to the app — Shift+drag still selects. |
+| **copy** | Ctrl+Shift+C, Ctrl+Insert, or Cmd+C — and **Ctrl+C when something is selected**. With nothing selected, Ctrl+C is the usual interrupt. |
+| **paste** | Ctrl+V, Ctrl+Shift+V, Shift+Insert, or Cmd+V. Sent exactly once, as typed text. |
+| **menu** | right-click for copy / paste / select all (Shift+right-click when an app has the mouse). |
+
+Selection works over the whole scrollback, not just the screen, so a long answer
+from an agent copies in one go. Apps can also set the clipboard themselves (OSC
+52). Copy-on-select and bracketed paste are both off by default and live in ⚙.
 
 ## Workspaces are your tags
 
@@ -70,30 +88,24 @@ is how you carve a couple of dozen sessions into projects.
 Tags live on the tmux session itself (a `@serai_tags` user option), so they
 persist for the session's lifetime with no external store.
 
-Hosts can carry their own grouping metadata in `~/.ssh/config`, as comments ssh
-ignores:
-
-```
-# @group web-stack
-# @tags prod,docker
-Host web-01
-    HostName 192.0.2.21
-    User deploy
-```
+The host list is your `~/.ssh/config`: serai keeps no host database of its own.
 
 ## The session model
 
-Every session is `where × what × persistence`:
+Every session is `where × what × persistence`. serai creates a missing session
+detached, then attaches a control-mode client to it:
 
-| | command run under the PTY |
-|---|---|
-| local shell | `tmux new -A -s shell-main` |
-| local agent | `tmux new -A -s cc-webapp 'cd ~/projects/webapp && claude'` |
-| remote shell | `ssh web-01 -t tmux new -A -s shell-deploy` |
-| remote agent | `ssh web-01 -t tmux new -A -s cc-api 'cd ~/app && claude'` |
+| | creates (only if missing) | attaches |
+|---|---|---|
+| local shell | `tmux new -d -s shell-main` | `tmux -C attach -t =shell-main` |
+| local agent | `tmux new -d -s cc-webapp '… cd ~/projects/webapp && claude …'` | `tmux -C attach -t =cc-webapp` |
+| remote shell | `ssh web-01 'tmux new -d -s shell-deploy'` | `ssh web-01 'tmux -C attach -t =shell-deploy'` |
+| remote agent | `ssh web-01 'tmux new -d -s cc-api …'` | `ssh web-01 'tmux -C attach -t =cc-api'` |
 
 The agent rows show Claude; Grok, OpenCode, and Hermes run the same way with their
-own command and prefix.
+own command and prefix. An agent runs inside a shell, which is why exiting it
+leaves you at a prompt. Remote panes on the same host share one ssh connection
+(OpenSSH connection sharing); `SERAI_SSH_MUX=0` turns that off.
 
 Naming tells serai what a session is:
 
@@ -106,58 +118,83 @@ Naming tells serai what a session is:
 The suffix forms are recognised so sessions you created outside serai are picked
 up as-is, rather than needing a rename.
 
-**Start in** — give a session a directory when you create or edit it, and both the
-terminal and the file browser open there. It's stored on the session, so it
-survives you `cd`-ing elsewhere and is reused when restoring after a reboot.
+**+ New** (Ctrl+Shift+N) and **⋮ → Edit session…** are the same form: host, kind,
+label, directory, launch, args, tags, and a favorite checkbox.
+
+**Directory** — give a session a directory and both the terminal and the file
+browser open there. It's stored on the session, so it survives you `cd`-ing
+elsewhere and is reused whenever the session is started again.
+
+**Launch** — for an agent: start a *new* conversation, *continue* the last one, or
+open the agent's *resume picker* to choose. It's remembered with the session and
+used whenever serai starts the agent again (restore, restart, relaunch).
 
 **Args** — a coding-agent session can carry extra arguments for its own command
-(Claude's `--chrome`, `--model opus`, whatever you need). Set them in **+ New** or
-the edit dialog and they're remembered with the session, including across a
-reboot. They're split into arguments and quoted individually before they reach
-the command, so nothing you type there can run as a shell command.
+(Claude's `--chrome`, `--model opus`, whatever you need). They're remembered with
+the session, including across a reboot. They're split into arguments and quoted
+individually before they reach the command, so nothing you type there can run as
+a shell command. A resume flag in the args wins over the launch choice.
 
-Both take effect when a session is *created* — tmux won't re-run a command for a
-session that already exists — so changing them on a running session needs a
-**restart**: **⋮** on its rail row → restart, or **save & restart** in the edit
-dialog. That kills and recreates it, running exactly what the args say and
-nothing more — so put its resume flag in them if you want to pick up a prior
-conversation (`--resume` for Claude and Grok, `--continue` for OpenCode and
-Hermes). It asks first, and shows you the command line it's about to run, since
-anything running in the session is lost.
+Directory and args take effect when a session is *created* — tmux won't re-run a
+command for a session that already exists — so changing them on a running session
+needs a restart: **Save & restart** in the edit form (on a phone, **⋮ →
+Restart…**). That kills and recreates the session, so anything running in it is
+lost; the form says so before you press it.
 
 **Saved profiles.** Creating a session remembers how to start it (host, kind,
-label, directory, tags, extra args). That profile survives `/exit` and a reboot.
-✕ on a live session — or on a saved row in **jump to session** — forgets it, and
-it will not be offered again. A **favorite** is the exception: ✕ there ends the
-tmux session but keeps the saved profile, since a favorite is something you
-launch again. Forget one with the ✕ in the **★ Favorites** menu.
+label, directory, launch, tags, extra args). That profile survives `/exit` and a
+reboot. **⋮ → Close session…** ends the tmux session and forgets the profile, so
+it won't be offered again. A **favorite** is the exception: closing it keeps the
+profile, since a favorite is something you launch again. **Forget profile…** in
+the edit form (or the ★ panel's ⋮) forgets one outright.
 
 **Resume is on demand**, not a banner and not a card in front of live work.
-**Jump to session** lists saved-but-not-live profiles (marked *saved*); picking
-one reopens it, and a Claude or Grok session lands in its `--resume` picker so
-you choose the conversation (OpenCode and Hermes pick up their last one via
-`--continue`). **+ New** with a matching label fills the path and args from the
-profile and defaults the session picker to resume. The board and rail only show
-what's running.
+**Jump** lists saved-but-not-running profiles under the live ones; picking one
+starts it again with its launch choice. **+ New** with a matching label fills in
+the rest of the form from the profile. The board and rail only show what's
+running.
 
-**Favorites** mark the profiles you want one-click restore for. Check **save to
-favorites** in **+ New** — the star on a board card, or **⋮ → save to favorites**
-on a rail row — and the session joins the **★ Favorites** menu in the top bar:
-one click attaches it if it's running, or restores it if it's not. A favorite is
-just a saved profile with a flag, so it follows the same ownership rules. It
-survives ✕ — a favorite is a launcher, not a bookmark on a running session — and
-you forget one from the **★ Favorites** menu.
+**Favorites** mark the profiles you want one-click restore for. Tick **favorite**
+in the form, or use **⋮ → Add to favorites** on a rail row, and the session joins
+the **★** panel in the top bar: a table you can drag to reorder, where one click
+attaches a running favorite or restores one that isn't. Its ⋮ removes a favorite
+or forgets it. A favorite is just a saved profile with a flag, so it follows the
+same ownership rules, and it survives closing its session — it's a launcher, not a
+bookmark on a running session.
+
+## Keyboard
+
+| | |
+|---|---|
+| Ctrl+Shift+P, Shift Shift | jump to a session (Ctrl+K too, outside a terminal) |
+| Ctrl+Shift+N | new session |
+| Ctrl+Shift+1 / 2 | focus the first / second pane |
+| ↑ ↓ Enter in the rail | move and attach; Shift+Enter opens in the second pane |
+| Shift+F10 or the menu key | a rail row's ⋮ menu |
+| Esc | closes any dialog or menu |
+
+**⚙ Settings** applies as you change it and follows you between devices:
+terminal font, size, cursor, scrollback, copy-on-select, and bracketed paste;
+the terminal palette and rail density; and the update check.
 
 ## On a phone
 
-The same app, laid out for one thumb: the board becomes a single column, the rail
-slides in as a drawer, and the terminal gets a key bar for the keys a soft
-keyboard doesn't have — `esc`, `tab`, `⇧⇥` (Shift+Tab, to cycle an agent's mode),
-`^C`, arrows, `|`, `~`, `/`. Long-press a file for its actions.
+Laid out for triage and short replies rather than as a shrunken desktop. The
+session list is grouped by state with each session's last lines inline, so you
+can see what needs you without opening anything; favorites and jump sit in the
+bottom bar.
+
+Tap a session for a full-screen terminal that resizes around the keyboard, with
+a key bar for the keys a soft keyboard doesn't have — `esc`, `tab`, `⇧⇥`
+(Shift+Tab, to cycle an agent's mode), `^C`, `↑` `↓`, and **⋯** for the rest
+(`←` `→` `|` `~` `/` `^D` `^Z` `^L` `^R`). **select** lays the recent output
+out as plain text so your phone's own selection handles and Copy work; **paste**
+pastes. Scrolling is the phone's own, momentum included. The **⋮** sheet has
+the session's actions and its files.
 
 <p>
-  <img src="docs/screenshots/mobile-board.png" alt="The board on a phone" width="290">
-  <img src="docs/screenshots/mobile-session.png" alt="A session on a phone, with the terminal key bar" width="290">
+  <img src="docs/screenshots/mobile-board.png" alt="The session list on a phone" width="290">
+  <img src="docs/screenshots/mobile-session.png" alt="A session on a phone, with the key bar" width="290">
 </p>
 
 ## Run it
@@ -183,8 +220,9 @@ the name you'll use:
 SERAI_HOST=0.0.0.0 SERAI_HOSTNAME=serai.home.example ./run.sh
 ```
 
-Requirements: `tmux` locally, and `ssh` + `tmux` on any remote host you attach to.
-Keys come from your ssh-agent (`ssh-add -l` to check). Python ≥3.10. The web UI
+Requirements: **tmux 3.2 or newer** locally and on any remote host you attach to
+(serai uses control-mode flow control, which arrived in 3.2), plus `ssh` for
+remote hosts. Keys come from your ssh-agent (`ssh-add -l` to check). Python ≥3.10. The web UI
 (xterm.js) is vendored, so nothing is fetched at runtime.
 
 ## Run as a service
@@ -216,6 +254,11 @@ default, lingering so it starts at boot).
 
 Re-running it updates in place, and **only restarts when backend code changed** —
 a frontend-only update deploys without dropping a single attached session.
+
+**Coming from 2.x?** Update the same way — re-run the installer, or **Update now**.
+Sessions, saved profiles, favorites, accounts and your terminal settings carry
+over, and open terminals reconnect on their own. Check `tmux -V` on your remote
+hosts first: serai 3 needs tmux 3.2 or newer there too.
 
 ```bash
 systemctl --user status serai
@@ -254,8 +297,8 @@ require a one-time code printed to the service log, so only someone with shell
 access can create the admin.
 
 **Sessions belong to whoever created them.** You see your own; admins see all of
-them, with an owner chip on each card and rail row so it's obvious whose is
-whose. Attaching, killing, renaming, restarting and broadcasting all refuse
+them, and **⚙ → Appearance → Show owner chips** marks whose is whose on every
+rail row. Attaching, closing, renaming, restarting and relaunching all refuse
 someone else's session, not just the board and the rail — a session name is easy
 to guess. Ownership lives on the session (`@serai_owner`), so it survives a
 restart and a later resume from a saved profile. Sessions with no recorded owner — made outside
@@ -293,10 +336,11 @@ Everything below is optional; the defaults are sensible.
 | `SERAI_AUTH` / `SERAI_SETUP_CODE` / `SERAI_SESSION_TTL` | login behaviour |
 | `SERAI_WORKING_WINDOW` | seconds of quiet before a shell stops reading as *working* (20) |
 | `SERAI_DONE_WINDOW` | how long a finished agent session shows as *done* (1800) |
-| `SERAI_WAIT_MARKERS` (plus per-kind `_CLAUDE`, `_GROK`, `_OPENCODE`, `_HERMES`, `_SHELL`) | extra phrases that mean "blocked", comma-separated |
-| `SERAI_STUCK_DUPES` | consecutive identical lines in one pane capture before an agent reads as *stuck* (3) |
-| `SERAI_STUCK_POLLS` | consecutive unchanged pane captures before an agent reads as *stuck* (3) |
+| `SERAI_WAIT_MARKERS` (plus per-kind `_CLAUDE`, `_GROK`, `_OPENCODE`, `_HERMES`, `_SHELL`) | extra phrases that mean "needs you", comma-separated |
+| `SERAI_STUCK_DUPES` | consecutive identical lines in one pane capture before an agent reads as *looping* (3) |
+| `SERAI_STUCK_POLLS` | consecutive unchanged pane captures before an agent reads as *looping* (3) |
 | `SERAI_TMUX_CACHE_TTL` | how long remote session discovery is cached (3s) |
+| `SERAI_SSH_MUX` | `0` gives each remote pane its own ssh connection instead of sharing one per host |
 | `SERAI_UPDATE_CHECK` | `off` disables the update check entirely (it's the only outbound call serai makes) |
 | `SERAI_UPDATE_REPO` | which repo the update check asks about, `owner/name` — for forks |
 | `SERAI_CONFIG_DIR` | where config, credentials, and the cert live |
@@ -312,7 +356,7 @@ answers with something that isn't a `PATH`, serai keeps the one it had.
 
 ## Known rough edges
 
-- **"blocked" is a heuristic.** It scans the last few non-blank lines of the
+- **"needs you" is a heuristic.** It scans the last few non-blank lines of the
   visible pane, so a session genuinely waiting can read as idle if its prompt has
   scrolled or reflowed out of that window. Widening the window would trade this
   for stale-prompt false positives. Extend the markers with the env vars above.
@@ -322,6 +366,12 @@ answers with something that isn't a `PATH`, serai keeps the one it had.
   origin with a certificate error.
 - **A cross-host folder copy has no progress bar**, only a running byte count —
   a tar stream doesn't know its own size, so there's no honest denominator.
+- **Grok can't show *working*.** Claude, OpenCode and Hermes print a marker while
+  a turn runs; Grok has none serai can read, so a busy Grok session shows *done*.
+- **Bracketed paste, when you turn it on, can miss an app that enabled it before
+  you attached.** tmux doesn't report that mode, so serai can't restore it, and
+  such a paste arrives unbracketed until the app sets it again. The setting is
+  off by default, and the default paste is unaffected.
 
 ## License
 
