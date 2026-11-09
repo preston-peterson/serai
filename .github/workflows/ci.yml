@@ -53,7 +53,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
 
+      # No build step: the browser runs web/ as written, so a syntax error in
+      # any module would only show up as a blank page. Catch it here instead
+      # (web/package.json marks the folder as ES modules for node).
+      - name: Syntax-check the frontend modules
+        run: |
+          find web -name '*.js' -not -path 'web/lib/*' -print0 | xargs -0 -n1 node --check
+
       # -rs reports the reason for any skip, so a growing skip list is visible
-      # in the log instead of hiding behind the pass count.
+      # in the log instead of hiding behind the pass count. The browser smoke
+      # test (tests/browser) runs on the runner's preinstalled Chrome.
       - name: Run tests
         run: pytest -q -rs

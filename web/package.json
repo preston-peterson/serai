@@ -1,0 +1,5 @@
+{
+  "//": "Marks web/ as ES modules so `node --check` (CI) parses them; nothing is installed or built.",
+  "private": true,
+  "type": "module"
+}
