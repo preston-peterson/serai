@@ -202,13 +202,29 @@ class ControlClosed(Exception):
     or the client could not complete a handshake."""
 
 
-def _mux_dir() -> str:
+# ssh refuses a ControlPath that won't fit a unix socket address (108 bytes) once
+# it appends its ".XXXXXXXXXXXXXXXX" temp suffix; %C expands to 40 hex chars.
+_MUX_PATH_MAX = 108 - 1 - 17 - 40 - 1
+
+
+def _mux_dir() -> str | None:
     """Per-user ssh multiplexing dir for control-mode connections, created 0700
-    on first use."""
+    on first use -- or None when its path is too long for ssh's socket names
+    (no XDG_RUNTIME_DIR and a long home), which then means plain ssh rather than
+    every remote attach failing. Never a shared dir like /tmp: another local
+    user could plant the socket there."""
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.config/serai")
     path = os.path.join(base, "serai-ssh")
+    if len(path.encode()) > _MUX_PATH_MAX:
+        return None
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
+
+
+def uses_mux(host: str) -> bool:
+    """Whether control clients for ``host`` share a multiplexed ssh master."""
+    return bool(host) and host != "local" and os.environ.get("SERAI_SSH_MUX", "1") != "0" \
+        and _mux_dir() is not None
 
 
 def control_argv(host: str, name: str, pause_after: int = 3) -> list[str]:
@@ -232,7 +248,7 @@ def control_argv(host: str, name: str, pause_after: int = 3) -> list[str]:
     if not host or host == "local":
         return tmux_cmd
     opts = [*sessions._SSH_OPTS]
-    if os.environ.get("SERAI_SSH_MUX", "1") != "0":
+    if uses_mux(host):
         opts += ["-o", "ControlMaster=auto",
                  "-o", f"ControlPath={_mux_dir()}/%C",
                  "-o", "ControlPersist=600"]

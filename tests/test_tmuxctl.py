@@ -13,6 +13,8 @@ Run:  pytest -q tests/test_tmuxctl.py
 import asyncio
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -143,7 +145,10 @@ def test_control_argv_local(monkeypatch):
     assert tmuxctl.control_argv("local", "demo-1", pause_after=5)[4] == "pause-after=5"
 
 
-def test_control_argv_remote_mux(monkeypatch, tmp_path):
+def test_control_argv_remote_mux(monkeypatch):
+    # Short on purpose: pytest's tmp_path is too long for an ssh socket name,
+    # and control_argv then (rightly) drops the mux -- see tests/test_mux.py.
+    tmp_path = Path(tempfile.mkdtemp(prefix="srm-", dir="/tmp"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.delenv("SERAI_SSH_MUX", raising=False)
     argv = tmuxctl.control_argv("service-b", "demo-1")

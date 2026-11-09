@@ -65,6 +65,24 @@ async def _close_ws(ws: WebSocket, code: int) -> None:
         pass  # already closed by the other side
 
 
+# One lock per remote host, held while a control client starts. With
+# ControlMaster=auto, attaches that start together (two panes on page load, or
+# every pane reconnecting after the master died) each find no master yet: one
+# becomes it and the rest open their own TCP connections. Measured against a
+# real host (tests/browser/test_remote.py): 2 connections for 2 panes. Holding
+# the lock until the first client's tmux has answered means the master is up and
+# listening, so the next one joins it. Costs one handshake of waiting, per host.
+_MUX_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def _start_control(host: str, client) -> None:
+    if not tmuxctl.uses_mux(host):
+        await client.start()
+        return
+    async with _MUX_LOCKS.setdefault(host, asyncio.Lock()):
+        await client.start()
+
+
 @router.websocket("/ws/attach")
 async def ws_attach(ws: WebSocket) -> None:
     await ws.accept()
@@ -161,7 +179,7 @@ async def ws_attach(ws: WebSocket) -> None:
     br = bridge.Bridge(client, ws.send_bytes, ws.send_text, cols=cols, rows=rows,
                        history=DEFAULT_HISTORY if history is None else history)
     try:
-        await client.start()
+        await _start_control(host, client)
         await br.start()
     except (tmuxctl.ControlClosed, tmuxctl.ControlError, ValueError, OSError) as exc:
         br.close()
