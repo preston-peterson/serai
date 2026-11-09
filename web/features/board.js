@@ -73,7 +73,8 @@ function render() {
         type: "button",
         class: stateFilter === st ? "on" : "",
         onclick: () => { stateFilter = stateFilter === st ? "" : st; render(); },
-      }, h(`span.dot.${store.STATE_CLASS[st]}`), store.STATE_LABEL[st], String(all.filter((s) => s.state === st).length))),
+      }, h(`span.dot.${store.STATE_CLASS[st]}`), store.STATE_LABEL[st],
+        h("span.n", String(all.filter((s) => s.state === st).length)))),
     h("span.count", `${shown.length} sessions · click a card to attach`));
   if (shown.length) {
     empty.hidden = true;

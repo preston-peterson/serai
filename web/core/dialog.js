@@ -56,8 +56,12 @@ export function open({ title, body, actions = [], wide = false, onClose, head, b
   };
   stack.push(dlg);
   document.body.append(scrim);
-  const first = panel.querySelector("[autofocus], input, select, textarea, button.primary") || closeBtn;
-  first.focus();
+  // Focus the first field or the primary action; with neither (a read-only
+  // panel, an empty list) the panel itself -- not the ✕, which would wear a
+  // focus ring for no reason. Esc and Tab still work from there.
+  const first = panel.querySelector("[autofocus], input, select, textarea, button.primary");
+  if (first) first.focus();
+  else { panel.tabIndex = -1; panel.focus({ preventScroll: true }); }
   return dlg;
 }
 

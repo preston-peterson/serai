@@ -274,3 +274,5 @@ button.switch{border:0;padding:0}
 .pr .host{color:var(--text-faint);font-size:.74rem}.pr .hint{margin-left:auto;color:var(--text-faint);font-size:.74rem}
 .pr .chip{padding:0 6px;font-size:.66rem}
 .keys{display:flex;gap:14px;padding:9px 16px;border-top:1px solid var(--border);background:var(--surface);color:var(--text-faint);font-size:.74rem}
+.board .strip .n { color: var(--text-faint); font-family: var(--mono); font-size: .74rem; }
+.dialog:focus { outline: none; }
