@@ -214,10 +214,12 @@ def _mux_dir() -> str:
 def control_argv(host: str, name: str, pause_after: int = 3) -> list[str]:
     """Argv for a control-mode client attached to session ``name``.
 
-    ``-f pause-after=N`` arms tmux's flow control: after N bytes of un-acked
-    pane output tmux pauses the pane (``%pause``) instead of letting the buffer
-    grow unbounded; we resume it with :meth:`ControlClient.continue_pane`
-    (``refresh-client -A '<pane>:continue'``) once we have drained.
+    ``-f pause-after=N`` arms tmux's own flow control: when a pane's output
+    to this client is more than N *seconds* behind, tmux pauses the pane
+    (``%pause``) instead of buffering without bound. The bridge treats that like
+    its own overflow: drain the socket, then continue the pane and re-seed in
+    one line (see ``bridge.Bridge``). Since our reader never stops, this is
+    a backstop for a stalled event loop rather than the main mechanism.
 
     Local is plain ``tmux -C``. Remote wraps the same command in ssh (invariant
     #1: BatchMode via ``sessions._SSH_OPTS``, ssh-agent only) and hands the
@@ -255,19 +257,9 @@ class ControlClient:
     Byte-exact replies to *commands* (``capture-pane -p`` bodies) come back
     from :meth:`send_command`, not from subscriptions.
 
-    Reader gate: :meth:`pause_reading` makes the reader task stop touching
-    stdout entirely -- it waits on ``_read_gate`` before every ``readline()``
-    (and before dispatching the one line that was already in flight) -- so the
-    pipe fills and *tmux* is the one that sees its client fall behind.
-    That is what lets ``-f pause-after=N`` (see :func:`control_argv`) do its
-    job: without the gate the reader always drains the pipe, tmux never notices
-    a slow consumer, no ``%pause`` is ever sent, and the backlog piles up in
-    this process's memory instead. The gate is a boolean, not a counter --
-    one :meth:`resume_reading` reopens it however many times it was paused --
-    and ``close()`` resumes first so the reader can drain to EOF and exit. Note
-    that ``%pause`` rides the same stream that was stopped, so it is *only
-    observed after* :meth:`resume_reading`; the bridge's sequence is
-    resume -> see ``%pause`` -> :meth:`continue_pane` -> re-seed.
+    Backpressure is the bridge's job: it pauses a pane with :meth:`pause_pane`
+    rather than stopping this reader, so command replies keep flowing while a
+    browser is slow.
     """
 
     def __init__(self, argv: list[str], *, cmd_timeout: float = 10.0,
@@ -295,11 +287,6 @@ class ControlClient:
         self._on_exit_cb: _ON_EXIT | None = None
         self._ready: asyncio.Future | None = None
         self._ready_msg: str | None = None
-        # Reader gate: the reader waits here before every readline(). Starts
-        # open (set == reading); asyncio binds an Event to a loop lazily, so
-        # constructing a client outside a loop stays legal.
-        self._read_gate = asyncio.Event()
-        self._read_gate.set()
 
     # -- public state ---------------------------------------------------------
 
@@ -307,26 +294,6 @@ class ControlClient:
     def closed(self) -> asyncio.Future:
         """Resolves once with the ``%exit`` reason text, or ``"eof"``."""
         return self._ensure_closed()
-
-    @property
-    def reading_paused(self) -> bool:
-        """True while the reader is gated (not reading from tmux's stdout)."""
-        return not self._read_gate.is_set()
-
-    def pause_reading(self) -> None:
-        """Stop reading stdout: nothing is pulled from the pipe and nothing is
-        dispatched to subscribers until :meth:`resume_reading`. Idempotent, and
-        sync by design -- the bridge calls it from a subscriber callback, mid
-        pane stream, when its outbound queue passes a high-water mark. The pipe
-        then fills and tmux sees the client fall behind, which is what makes
-        ``pause-after`` engage. See the class docstring for why ``%pause`` only
-        shows up after resuming."""
-        self._read_gate.clear()
-
-    def resume_reading(self) -> None:
-        """Resume reading after :meth:`pause_reading`. Idempotent, and not a
-        counter: one call reopens the gate however many times it was closed."""
-        self._read_gate.set()
 
     def subscribe(self, name: str,
                   cb: Callable[[Line], None]) -> Callable[[], None]:
@@ -460,10 +427,7 @@ class ControlClient:
 
     async def close(self) -> None:
         """Close stdin (control mode exits on EOF), wait <=2 s, then terminate.
-        Pending commands and an unfinished handshake fail with ControlClosed.
-        Resuming the reader first is what lets a paused client shut down: the
-        reader has to reach EOF to exit, and ``close()`` waits for it."""
-        self.resume_reading()
+        Pending commands and an unfinished handshake fail with ControlClosed."""
         if self._ready is not None and not self._ready.done():
             self._ready.set_exception(ControlClosed("client closed"))
         self._fail_pending(ControlClosed("client closed"))
@@ -566,17 +530,9 @@ class ControlClient:
             if stdout is None:
                 raise EOFError("reader started without a process")
             while True:
-                # Gate before reading: a paused client stops pulling, so the
-                # pipe and tmux's own per-client buffer hold the backlog. The
-                # wait after the read covers the line already in flight when
-                # the gate closed -- it is held here rather than dispatched, so
-                # a paused client delivers nothing at all, and that line still
-                # goes out first, in order, once reading resumes.
-                await self._read_gate.wait()
                 raw = await stdout.readline()
                 if not raw:
                     break
-                await self._read_gate.wait()
                 self._handle(parse_line(raw.rstrip(b"\r\n"), self._in_block))
         except asyncio.CancelledError:
             raise
