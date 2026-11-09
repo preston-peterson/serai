@@ -46,7 +46,9 @@ _SEP = "\x1f"
 _FMT = _SEP.join(("#{session_name}", "#{session_attached}", "#{session_activity}",
                   "#{@serai_tags}", "#{pane_current_command}", "#{alternate_on}",
                   "#{@serai_args}", "#{@serai_owner}", "#{@serai_dir}",
-                  "#{pane_current_path}"))
+                  "#{pane_current_path}", "#{pane_pid}"))
+# pane_pid rides AFTER the path: it is digits only, so the parser peels it off the
+# end, and a listing (or test row) without it parses exactly as before.
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new"]
 
 # Per-host TTL cache around remote session discovery. Local discovery is cheap
@@ -347,6 +349,16 @@ _SHELL_CMDS = {"bash", "-bash", "zsh", "-zsh", "fish", "-fish", "sh", "-sh",
 # `default-shell -c`), with a /bin/sh fallback; the literal is the same idiom
 # the start-dir shell case below already uses.
 _EXIT_SHELL = "; exec ${SHELL:-/bin/sh}"
+
+# ...and what it runs first: job control in the wrapper shell. Without it the
+# wrapper (`$SHELL -c "agent; exec $SHELL"`) keeps the terminal's foreground
+# process group while the agent runs, so tmux's pane_current_command reports
+# "bash" for the whole session -- every agent read as parked at its prompt,
+# which silently disabled loop detection and would make "Relaunch" type into a
+# running agent. With `set -m` the agent runs as its own foreground job and is
+# reported by name; after it exits, the exec'd shell is. Measured 2026-11-08 on
+# bash and dash; a failed `cd` still lands at the prompt with its error shown.
+_JOB_CONTROL = "set -m; "
 # A shell is "working" if it saw activity within _WORKING_WINDOW seconds; an
 # agent session sitting at its prompt shows "done" until it's been quiet for
 # _DONE_WINDOW seconds, then decays to idle. Override with the env vars.
@@ -543,6 +555,27 @@ _cache_lock = threading.Lock()
 _session_cache: dict[str, tuple[float, list[Session]]] = {}
 
 
+def pane_has_children(host: str, pid: int) -> bool | None:
+    """Whether a pane's process has child processes, or None if we can't tell.
+
+    An interactive shell at its prompt has none; a shell running a program (the
+    agent under a pre-v3 wrapper, or anything else in the foreground) does.
+    Local reads /proc; remote asks over ssh (one round trip -- callers use it
+    for deliberate actions, not on every poll). The pid is an int from tmux, so
+    nothing hostile reaches the command (invariant #3).
+    """
+    pid = int(pid)
+    path = f"/proc/{pid}/task/{pid}/children"
+    if host == "local":
+        try:
+            with open(path) as f:
+                return bool(f.read().split())
+        except OSError:
+            return None
+    out = _run(["ssh", *_SSH_OPTS, host, f"cat {path}"])
+    return None if out is None else bool(out.split())
+
+
 def _list_sessions_uncached(host: str) -> list[Session]:
     out = _run(_tmux_argv(host, f"tmux list-sessions -F '{_FMT}'"))
     if not out:
@@ -554,7 +587,11 @@ def _list_sessions_uncached(host: str) -> list[Session]:
 
     sessions: list[Session] = []
     for line in out.splitlines():
-        parts = line.split(_SEP, 9)  # bounded split: the path (last) is never split
+        pane_pid = None
+        head, sep, last = line.rpartition(_SEP)
+        if sep and last.isdigit() and head.count(_SEP) >= 9:
+            line, pane_pid = head, int(last)
+        parts = line.split(_SEP, 9)  # bounded split: the path is never split
         if len(parts) < 2:
             continue
         name, attached_flag = parts[0], parts[1]
@@ -586,6 +623,14 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         # in the foreground: none of the signals apply to it -- it is parked, not
         # looping, and the fixed prompt would otherwise read as signal 2.
         parked_shell = command.lower() in _SHELL_CMDS
+        # A pre-v3 agent session runs its harness under a wrapper shell without
+        # job control (see _JOB_CONTROL), so the foreground command reads as the
+        # shell even while the agent works. The wrapper has the agent as a child;
+        # a shell idling at its prompt has none. Local only -- one file read; a
+        # remote session goes by the foreground command alone.
+        if parked_shell and kind in AGENT_KINDS and host == "local" and pane_pid:
+            if pane_has_children(host, pane_pid):
+                parked_shell = False
         content = _content_lines(lines)
         dupe_lines = kind in AGENT_KINDS and not parked_shell and \
             _trailing_dupes(content) >= _STUCK_DUPES
@@ -744,15 +789,16 @@ def create_argv(host: str, name: str, kind: str, path: str | None = None,
     # has no command of ours to pass them to.
     if run and args:
         run = f"{run} {args}"
-    if run:
-        # Exiting the harness drops the pane to a shell prompt instead of ending
-        # the session (see _EXIT_SHELL). A constant tail, no interpolation.
-        run = f"{run}{_EXIT_SHELL}"
     if path:
         # Both kinds honour a start directory. `cd` runs in the shell tmux spawns,
         # so _quote_path's expandable ~ works and no tilde reaches tmux itself;
         # a shell then `exec`s so the session behaves like an ordinary login shell.
         run = f"cd {_quote_path(path)} && {run or 'exec ${SHELL:-/bin/sh}'}"
+    if spec:
+        # Exiting the harness drops the pane to a shell prompt instead of ending
+        # the session (see _EXIT_SHELL), and job control makes the running agent
+        # visible as the pane's command (see _JOB_CONTROL). Constants only.
+        run = f"{_JOB_CONTROL}{run}{_EXIT_SHELL}"
     size = []
     if cols and rows:
         size = ["-x", str(int(cols)), "-y", str(int(rows))]
@@ -1019,6 +1065,17 @@ def get_owner(host: str, name: str) -> str:
     if host != "local":
         argv = ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in argv)]
     return (_run(argv) or "").strip()
+
+
+def pane_pid(host: str, name: str) -> int | None:
+    """The process id of a session's active pane, or None."""
+    # "=name:" -- exact session match, then its active pane. A bare "=name" is a
+    # session target; as a pane target tmux prints nothing and exits 0.
+    argv = ["tmux", "display-message", "-p", "-t", "=" + name + ":", "#{pane_pid}"]
+    if host != "local":
+        argv = ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in argv)]
+    out = (_run(argv) or "").strip()
+    return int(out) if out.isdigit() else None
 
 
 def own_dir() -> str:

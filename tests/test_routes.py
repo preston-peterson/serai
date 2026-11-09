@@ -46,6 +46,7 @@ EXPECTED = {
     ("/api/rename", "POST"),
     ("/api/kill", "POST"),
     ("/api/sessions/restart", "POST"),
+    ("/api/sessions/relaunch", "POST"),
     ("/api/args", "POST"),
     ("/api/tags", "POST"),
     ("/api/favorite", "POST"),
@@ -84,4 +85,4 @@ def test_route_table_is_exactly_the_documented_set():
     table = route_table()
     assert table - EXPECTED == set(), f"unexpected routes: {sorted(table - EXPECTED)}"
     assert EXPECTED - table == set(), f"missing routes: {sorted(EXPECTED - table)}"
-    assert len(table) == len(EXPECTED) == 42
+    assert len(table) == len(EXPECTED) == 43

@@ -174,6 +174,62 @@ async def api_restart(request: Request) -> JSONResponse:
     return JSONResponse({"ok": bool(ok)})
 
 
+@router.post("/api/sessions/relaunch")
+async def api_relaunch(request: Request) -> JSONResponse:
+    """Run an agent session's command again, in its pane, after the harness
+    exited to the shell prompt (_EXIT_SHELL). Body: {host, name, launch?}.
+
+    The one launch rule: the profile's effective launch (new / continue /
+    resume) plus the args-win rule of ``resume_flag`` -- the same pieces a
+    create uses. ``launch`` overrides the rule for this one run (the "start
+    fresh" button sends "new"). The command is typed with send-keys as a single
+    literal argument; args are already shlex-quoted tokens (clean_args), so the
+    shell sees exactly what a create would have run (invariant #3).
+
+    Refuses unless the session is an agent kind with a shell in the foreground:
+    typing a command into a running TUI would be input to the agent, not a relaunch.
+    """
+    t = await common._target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
+    mode = body.get("launch")
+    if mode is not None and mode not in ("new", "continue", "resume"):
+        return JSONResponse({"error": "launch must be new, continue or resume"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    sessions.clear_cache(host)
+    live = next((s for s in await loop.run_in_executor(_pool, sessions.list_sessions, host)
+                 if s.name == name), None)
+    if live is None:
+        return JSONResponse({"error": "no such session"}, status_code=404)
+    spec = sessions._AGENTS.get(live.kind)
+    if not spec:
+        return JSONResponse({"error": "not an agent session"}, status_code=400)
+    busy = JSONResponse({"error": f"{spec['cmd']} is still running in that session"},
+                        status_code=409)
+    if not live.at_prompt:
+        return busy
+    # Belt and braces for a pre-v3 session on a remote host, where the listing
+    # can't see past the wrapper shell: typing into a running agent would be a
+    # prompt to it, not a relaunch. Unknown (no pid, ssh failed) refuses too.
+    pid = await loop.run_in_executor(_pool, sessions.pane_pid, host, name)
+    if pid is None or await loop.run_in_executor(
+            _pool, sessions.pane_has_children, host, pid) is not False:
+        return busy
+    profile = await loop.run_in_executor(_pool, store.get, host, name) or {}
+    if mode is None:
+        mode = store.effective_launch({**profile, "kind": live.kind})
+    args = live.args or profile.get("args") or ""
+    flag = sessions.resume_flag(live.kind, "" if mode == "new" else mode, args)
+    command = f"{spec['cmd']}{flag}" + (f" {args}" if args else "")
+    ok = await loop.run_in_executor(_pool, sessions.run_send,
+                                    sessions.send_keys_argv(host, name, command))
+    sessions.clear_cache(host)
+    if not ok:
+        return JSONResponse({"error": "tmux refused the keys"}, status_code=502)
+    return JSONResponse({"ok": True, "command": command})
+
+
 @router.post("/api/tags")
 async def api_tags(request: Request) -> JSONResponse:
     """Set a session's tags (stored as the @serai_tags tmux user option).

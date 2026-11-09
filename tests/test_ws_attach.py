@@ -224,3 +224,72 @@ def test_listing_flags_an_agent_session_parked_at_its_shell(tmux, monkeypatch):
     assert by["fa-parked"].at_prompt is True
     assert by["shell-plain"].at_prompt is False
     assert by["fa-parked"].as_dict()["at_prompt"] is True
+
+
+def _fake_agent(monkeypatch, cmd):
+    monkeypatch.setitem(sessions._AGENTS, "fakeagent",
+                        {"cmd": cmd, "prefix": "fa-", "chip": "fa", "glyph": "x",
+                         "resume": {"continue": " --continue", "resume": " --resume"}})
+    monkeypatch.setattr(sessions, "AGENT_KINDS", sessions.AGENT_KINDS | {"fakeagent"})
+
+
+def _wait_parked(name):
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        sessions.clear_cache("local")
+        s = next((x for x in sessions.list_sessions("local") if x.name == name), None)
+        if s and s.at_prompt:
+            return s
+        time.sleep(0.2)
+    return None
+
+
+def test_relaunch_types_the_launch_rule_into_a_parked_agent(tmux, monkeypatch):
+    _fake_agent(monkeypatch, "echo relaunched-ok")
+    assert sessions.create_session(sessions.create_argv("local", "fa-rl", "fakeagent"))
+    assert _wait_parked("fa-rl")
+    c = TestClient(app)
+    # no profile yet -> an agent's default rule is resume
+    r = c.post("/api/sessions/relaunch", json={"host": "local", "name": "fa-rl"})
+    assert r.status_code == 200 and r.json()["command"] == "echo relaunched-ok --resume"
+    assert _wait_parked("fa-rl")
+    # a one-off "new" (the start-fresh button) adds no flag
+    r = c.post("/api/sessions/relaunch", json={"host": "local", "name": "fa-rl", "launch": "new"})
+    assert r.json()["command"] == "echo relaunched-ok"
+    ok = lambda: tmux("capture-pane", "-p", "-t", "fa-rl").stdout.count("relaunched-ok") >= 3
+    deadline = time.time() + 5
+    while time.time() < deadline and not ok():
+        time.sleep(0.1)
+    assert ok(), "the create ran it once and each relaunch typed it again"
+    assert c.post("/api/sessions/relaunch",
+                  json={"host": "local", "name": "fa-rl", "launch": "; rm"}).status_code == 400
+
+
+def test_relaunch_refuses_a_running_agent_and_a_shell(tmux, monkeypatch):
+    _fake_agent(monkeypatch, "sleep 30")
+    assert sessions.create_session(sessions.create_argv("local", "fa-busy", "fakeagent"))
+    assert sessions.create_session(sessions.create_argv("local", "shell-rl", "shell"))
+    time.sleep(0.5)
+    c = TestClient(app)
+    r = c.post("/api/sessions/relaunch", json={"host": "local", "name": "fa-busy"})
+    assert r.status_code == 409, "typing into a running agent would be input, not a relaunch"
+    assert c.post("/api/sessions/relaunch", json={"host": "local", "name": "shell-rl"}).status_code == 400
+    assert c.post("/api/sessions/relaunch", json={"host": "local", "name": "fa-nope"}).status_code == 404
+
+
+def test_a_pre_v3_wrapper_running_its_agent_is_not_at_prompt(tmux, monkeypatch):
+    """Sessions created before job control was added keep running across the
+    upgrade. Their wrapper shell owns the foreground, so only the child process
+    shows the agent is still working -- relaunch must not type into it."""
+    _fake_agent(monkeypatch, "sleep 30")
+    old_style = "sleep 30" + sessions._EXIT_SHELL                  # no _JOB_CONTROL
+    tmux("new-session", "-d", "-s", "fa-legacy", old_style)
+    time.sleep(0.5)
+    assert tmux("display-message", "-p", "-t", "fa-legacy",
+                "#{pane_current_command}").stdout.strip() in sessions._SHELL_CMDS
+    sessions.clear_cache("local")
+    s = next(x for x in sessions.list_sessions("local") if x.name == "fa-legacy")
+    assert s.at_prompt is False
+    r = TestClient(app).post("/api/sessions/relaunch", json={"host": "local", "name": "fa-legacy"})
+    assert r.status_code == 409
+    assert sessions.pane_has_children("local", sessions.pane_pid("local", "fa-legacy")) is True

@@ -550,10 +550,12 @@ def test_wait_markers_configurable_via_env(monkeypatch):
 
 
 def _inner(command):
-    # every agent command serai builds ends with the drop-to-prompt tail; strip
-    # it (asserting it's there) so callers can assert on the harness command
+    # every agent command serai builds starts with job control and ends with the
+    # drop-to-prompt tail; strip both (asserting they're there) so callers can
+    # assert on the harness command
+    assert command.startswith(sessions._JOB_CONTROL), command
     assert command.endswith(sessions._EXIT_SHELL), command
-    return command[:-len(sessions._EXIT_SHELL)]
+    return command[len(sessions._JOB_CONTROL):-len(sessions._EXIT_SHELL)]
 
 
 def _new_cmd(argv):
@@ -675,9 +677,9 @@ def test_agent_exit_drops_to_prompt_not_into_a_dead_session():
     assert tail == "; exec ${SHELL:-/bin/sh}"
     # every agent kind, with and without a start dir, ends in the prompt shell
     av = sessions.create_argv("local", "oc-web", "opencode")
-    assert av[av.index("new") + 4] == "opencode" + tail
+    assert av[av.index("new") + 4] == sessions._JOB_CONTROL + "opencode" + tail
     av = sessions.create_argv("local", "cc-x", "claude", "~/git/app", "resume", args="--chrome")
-    assert av[av.index("new") + 4] == "cd ~/git/app && claude --resume --chrome" + tail
+    assert av[av.index("new") + 4] == sessions._JOB_CONTROL + "cd ~/git/app && claude --resume --chrome" + tail
     # one tail only -- a start dir must not stack a second exec
     assert av[av.index("new") + 4].count("${SHELL") == 1
     # shells are untouched: a bare new for the no-dir case (tmux's own login
@@ -688,8 +690,7 @@ def test_agent_exit_drops_to_prompt_not_into_a_dead_session():
     assert sh[sh.index("new") + 4] == "cd ~/git/app && exec ${SHELL:-/bin/sh}"
     # remote: the whole command is one ssh-side element, single-quoted intact
     rem = sessions.create_argv("web1", "hm-app", "hermes", "/srv/app")[-1]
-    assert "'hermes; exec ${SHELL:-/bin/sh}'" in rem or \
-        "'cd /srv/app && hermes; exec ${SHELL:-/bin/sh}'" in rem
+    assert "'set -m; cd /srv/app && hermes; exec ${SHELL:-/bin/sh}'" in rem
 
 
 def test_agent_that_exited_to_prompt_is_parked_not_stuck(monkeypatch):
@@ -1194,7 +1195,7 @@ def test_create_argv_start_dir_applies_to_both_kinds():
     sh = sessions.create_argv("local", "shell-x", "shell", "~/git/proj")
     assert "cd ~/git/proj && exec ${SHELL:-/bin/sh}" in sh   # ~ stays shell-expandable
     cc = sessions.create_argv("local", "cc-x", "claude", "~/git/proj", "continue")
-    assert "cd ~/git/proj && claude --continue" + sessions._EXIT_SHELL in cc
+    assert sessions._JOB_CONTROL + "cd ~/git/proj && claude --continue" + sessions._EXIT_SHELL in cc
     # no path -> plain session, unchanged
     assert not any("cd " in a for a in sessions.create_argv("local", "shell-y", "shell"))
     # a path with a space survives being quoted twice for the remote shell: the
@@ -2472,12 +2473,12 @@ def test_claude_session_runs_claude_even_without_a_start_dir():
     directory, which then got snapshotted as that session's dir and poisoned
     every later restore. `claude` must run either way."""
     argv = sessions.create_argv("local", "cc-x", "claude")
-    assert ("claude" + sessions._EXIT_SHELL) in argv, \
+    assert (sessions._JOB_CONTROL + "claude" + sessions._EXIT_SHELL) in argv, \
         f"claude session must still launch claude: {argv}"
     withdir = sessions.create_argv("local", "cc-x", "claude", path="/tmp/proj")
-    assert "cd /tmp/proj && claude" + sessions._EXIT_SHELL in withdir
+    assert sessions._JOB_CONTROL + "cd /tmp/proj && claude" + sessions._EXIT_SHELL in withdir
     # resume flags keep working in both shapes
-    assert "claude --resume" + sessions._EXIT_SHELL in \
+    assert sessions._JOB_CONTROL + "claude --resume" + sessions._EXIT_SHELL in \
         sessions.create_argv("local", "cc-x", "claude", resume="resume")
 
 
@@ -2569,8 +2570,8 @@ def test_clean_args_is_idempotent_and_rejects_the_unparseable():
 def test_extra_args_reach_claude_in_create_argv():
     argv = sessions.create_argv("local", "cc-x", "claude", path="/tmp/proj",
                                 resume="resume", args="--chrome")
-    assert "cd /tmp/proj && claude --resume --chrome" + sessions._EXIT_SHELL in argv
-    assert "claude --chrome" + sessions._EXIT_SHELL in \
+    assert sessions._JOB_CONTROL + "cd /tmp/proj && claude --resume --chrome" + sessions._EXIT_SHELL in argv
+    assert sessions._JOB_CONTROL + "claude --chrome" + sessions._EXIT_SHELL in \
         sessions.create_argv("local", "cc-x", "claude", args="--chrome")
     # a shell has no command of ours to carry them, so they're ignored there
     assert not any("--chrome" in a for a in
