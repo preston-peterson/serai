@@ -11,11 +11,19 @@ descriptors only, never credentials (invariant #1).
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import threading
 import time
 from pathlib import Path
 
 from . import paths
+
+try:
+    import fcntl                      # POSIX only; absence is handled, not fatal
+except ImportError:
+    fcntl = None
 
 # the descriptor kept per session -- enough to recreate it, nothing sensitive.
 # `favorite` is store-side only: it is never read from a live session (it is not a
@@ -39,6 +47,49 @@ def _path() -> Path:
 
 def _key(host: str, name: str) -> str:
     return f"{host}::{name}"
+
+
+# Serialises every load-mutate-save on sessions.json. Two levels, for the two
+# ways it can be lost:
+#   * the thread lock covers in-process races -- upsert runs in the executor
+#     pool on every /api/sessions poll (from every tab) while set_tags /
+#     set_args / set_favorite / remove run from other handlers, so two
+#     read-modify-writes can interleave and one is silently lost (the same
+#     fault settings.merge takes a lock for). An RLock because locked callers
+#     may nest (favorites -> saved).
+#   * the flock covers other *processes*: an external script editing
+#     sessions.json raced a live poll and lost its update the same way. It
+#     lives in a sidecar (sessions.json.lock, 0600, created on first use) so
+#     the lock file is never the one os.replace() swaps out from under a
+#     holder. On a platform without fcntl, or a filesystem that won't take
+#     flock, the thread lock alone still holds (in-process safety preserved).
+_lock = threading.RLock()
+
+
+def _lock_path() -> Path:
+    return Path(str(_path()) + ".lock")
+
+
+@contextlib.contextmanager
+def _locked():
+    """Hold both locks for one load-mutate-save (or a consistent read)."""
+    with _lock:
+        if fcntl is None:
+            yield
+            return
+        try:
+            fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            yield                          # unreadable dir: thread lock only
+            return
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                pass                       # fs won't flock: thread lock only
+            yield
+        finally:
+            os.close(fd)                   # closing the fd drops the flock
 
 
 def _is_self_dir(path: str) -> bool:
@@ -90,76 +141,79 @@ def upsert(records: list[dict]) -> None:
     all. Letting that overwrite a good stored dir is how every Claude session
     once ended up restoring into serai's install directory.
     """
-    data = _load()
-    changed = False
-    for r in records:
-        rec = {k: r.get(k) for k in _FIELDS}
-        if not rec["host"] or not rec["name"]:
-            continue
-        k = _key(rec["host"], rec["name"])
-        prior = data.get(k)
-        # empty live tags must not clobber good stored tags (the bug this guards)
-        if not rec.get("tags") and prior and prior.get("tags"):
-            rec["tags"] = prior["tags"]
-        # same rule for the extra agent args: a session recreated without its
-        # @serai_args comes back bare, and that must not erase the stored value.
-        # A deliberate clear goes through set_args, not through a degraded poll.
-        if not rec.get("args") and prior and prior.get("args"):
-            rec["args"] = prior["args"]
-        # ...and for the owner. A session recreated without its @serai_owner must
-        # not silently become unowned, which would hide it from the user whose
-        # session it is. Ownership is only ever set at creation, so there is no
-        # "deliberate clear" path to respect here.
-        if not rec.get("owner") and prior and prior.get("owner"):
-            rec["owner"] = prior["owner"]
-        # favorite is store-side only (set_favorite, never a live value): a poll
-        # carries it forward from the prior record and never clears it. Kept a
-        # clean bool so the JSON is true/false, never null. The live snapshot has
-        # no favorite, so it is decided by the stored state, not the poll -- the
-        # same three-for-three rule as tags/dir/args/owner.
-        rec["favorite"] = bool((prior or {}).get("favorite"))
-        # An explicit start-in dir is authoritative over wherever the pane sits.
-        # serai's own cwd is disqualified in *either* role: it is not a dir anyone
-        # chose, and once it leaks into @serai_dir it would otherwise reassert
-        # itself on every poll. Falling back, keep what we had rather than record
-        # "nowhere" or serai's own directory as a session's project dir.
-        live_dir, live_path = r.get("dir") or "", rec.get("path") or ""
-        if live_dir and not _is_self_dir(live_dir):
-            rec["path"] = live_dir
-        elif not live_path or _is_self_dir(live_path):
-            rec["path"] = (prior or {}).get("path") or ""
-        if prior != rec:
-            data[k] = rec
-            changed = True
-    if changed:
-        _save(data)
+    with _locked():
+        data = _load()
+        changed = False
+        for r in records:
+            rec = {k: r.get(k) for k in _FIELDS}
+            if not rec["host"] or not rec["name"]:
+                continue
+            k = _key(rec["host"], rec["name"])
+            prior = data.get(k)
+            # empty live tags must not clobber good stored tags (the bug this guards)
+            if not rec.get("tags") and prior and prior.get("tags"):
+                rec["tags"] = prior["tags"]
+            # same rule for the extra agent args: a session recreated without its
+            # @serai_args comes back bare, and that must not erase the stored value.
+            # A deliberate clear goes through set_args, not through a degraded poll.
+            if not rec.get("args") and prior and prior.get("args"):
+                rec["args"] = prior["args"]
+            # ...and for the owner. A session recreated without its @serai_owner must
+            # not silently become unowned, which would hide it from the user whose
+            # session it is. Ownership is only ever set at creation, so there is no
+            # "deliberate clear" path to respect here.
+            if not rec.get("owner") and prior and prior.get("owner"):
+                rec["owner"] = prior["owner"]
+            # favorite is store-side only (set_favorite, never a live value): a poll
+            # carries it forward from the prior record and never clears it. Kept a
+            # clean bool so the JSON is true/false, never null. The live snapshot has
+            # no favorite, so it is decided by the stored state, not the poll -- the
+            # same three-for-three rule as tags/dir/args/owner.
+            rec["favorite"] = bool((prior or {}).get("favorite"))
+            # An explicit start-in dir is authoritative over wherever the pane sits.
+            # serai's own cwd is disqualified in *either* role: it is not a dir anyone
+            # chose, and once it leaks into @serai_dir it would otherwise reassert
+            # itself on every poll. Falling back, keep what we had rather than record
+            # "nowhere" or serai's own directory as a session's project dir.
+            live_dir, live_path = r.get("dir") or "", rec.get("path") or ""
+            if live_dir and not _is_self_dir(live_dir):
+                rec["path"] = live_dir
+            elif not live_path or _is_self_dir(live_path):
+                rec["path"] = (prior or {}).get("path") or ""
+            if prior != rec:
+                data[k] = rec
+                changed = True
+        if changed:
+            _save(data)
 
 
 def set_tags(host: str, name: str, tags: list) -> None:
     """Record a deliberate tag change (including a clear) straight into the
     snapshot, so ``upsert``'s sticky-tags rule can't later resurrect old tags.
     A no-op if the session isn't snapshotted yet -- the next poll will add it."""
-    data = _load()
-    k = _key(host, name)
-    rec = data.get(k)
-    if rec is None:
-        return
-    if rec.get("tags") != tags:
-        rec["tags"] = tags
-        _save(data)
+    with _locked():
+        data = _load()
+        k = _key(host, name)
+        rec = data.get(k)
+        if rec is None:
+            return
+        if rec.get("tags") != tags:
+            rec["tags"] = tags
+            _save(data)
 
 
 def set_args(host: str, name: str, args: str) -> None:
     """Record a deliberate change to a session's extra agent args (including a
     clear) straight into the snapshot, so ``upsert``'s sticky rule can't later
     resurrect the old value. A no-op if the session isn't snapshotted yet."""
-    data = _load()
-    rec = data.get(_key(host, name))
-    if rec is None:
-        return
-    if rec.get("args") != args:
-        rec["args"] = args
-        _save(data)
+    with _locked():
+        data = _load()
+        rec = data.get(_key(host, name))
+        if rec is None:
+            return
+        if rec.get("args") != args:
+            rec["args"] = args
+            _save(data)
 
 
 def set_favorite(host: str, name: str, favorite: bool) -> None:
@@ -168,13 +222,14 @@ def set_favorite(host: str, name: str, favorite: bool) -> None:
     it. A no-op if the session isn't snapshotted yet -- the next poll will add
     the record (see upsert's favorite rule), and a claim that precedes it is
     re-applied by the caller once the record exists."""
-    data = _load()
-    rec = data.get(_key(host, name))
-    if rec is None:
-        return
-    if bool(rec.get("favorite")) != bool(favorite):
-        rec["favorite"] = bool(favorite)
-        _save(data)
+    with _locked():
+        data = _load()
+        rec = data.get(_key(host, name))
+        if rec is None:
+            return
+        if bool(rec.get("favorite")) != bool(favorite):
+            rec["favorite"] = bool(favorite)
+            _save(data)
 
 
 def favorites() -> list[dict]:
@@ -184,9 +239,10 @@ def favorites() -> list[dict]:
 
 def remove(host: str, name: str) -> None:
     """Drop a profile (called on an explicit kill / forget)."""
-    data = _load()
-    if data.pop(_key(host, name), None) is not None:
-        _save(data)
+    with _locked():
+        data = _load()
+        if data.pop(_key(host, name), None) is not None:
+            _save(data)
 
 
 def get(host: str, name: str) -> dict | None:
@@ -195,8 +251,15 @@ def get(host: str, name: str) -> dict | None:
 
 
 def saved() -> list[dict]:
-    """The saved session descriptors, in a stable order."""
-    return sorted(_load().values(), key=lambda r: (r.get("host", ""), r.get("name", "")))
+    """The saved session descriptors, in a stable order.
+
+    Read under the lock too: ``atomic_write`` already means a reader never sees
+    a half-written file, but holding the lock makes ``saved()`` a consistent
+    snapshot with respect to a locked writer's whole load-mutate-save, not just
+    to its final rename."""
+    with _locked():
+        data = _load()
+    return sorted(data.values(), key=lambda r: (r.get("host", ""), r.get("name", "")))
 
 
 def mark_live(keys) -> None:
