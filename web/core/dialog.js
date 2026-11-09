@@ -6,11 +6,13 @@ import { h } from "./dom.js";
 
 const stack = [];
 
-/** open({title, body, actions, wide, tabs, onClose}) -> {el, close(result)}
+/** open({title, body, actions, wide, cls, bare, top, onClose}) -> {el, close(result)}
+ *  bare: no header/footer -- the body is the whole panel (the jump palette).
+ *  cls: extra panel class(es). top: hang the panel near the top, not centred.
  *  body: Node or array of Nodes. actions: [{label, kind: "primary"|"danger"|"",
  *  onClick(dlg) -> false keeps it open, left: true puts it before the spacer}].
  *  The returned `done` promise resolves with whatever close() was given. */
-export function open({ title, body, actions = [], wide = false, onClose, head } = {}) {
+export function open({ title, body, actions = [], wide = false, onClose, head, bare = false, cls = "", top = false } = {}) {
   const prevFocus = document.activeElement;
   let resolveDone;
   const done = new Promise((r) => { resolveDone = r; });
@@ -27,11 +29,11 @@ export function open({ title, body, actions = [], wide = false, onClose, head } 
     },
   }, a.label);
   foot.append(...leftActs.map(mkBtn), h("span.spacer"), ...rightActs.map(mkBtn));
-  const panel = h(`div.dialog${wide ? ".wide" : ""}`, { role: "dialog", "aria-modal": "true", "aria-label": title },
-    h("div.dialog-head", h("h2", title), head || null, closeBtn),
-    h("div.dialog-body", body),
+  const panel = h(`div.dialog${wide ? ".wide" : ""}`, { role: "dialog", "aria-modal": "true", "aria-label": title, class: cls },
+    bare ? null : h("div.dialog-head", h("h2", title), head || null, closeBtn),
+    bare ? body : h("div.dialog-body", body),
     actions.length ? foot : null);
-  const scrim = h("div.scrim", panel);
+  const scrim = h(`div.scrim${top ? ".top" : ""}`, panel);
   scrim.addEventListener("mousedown", (e) => { if (e.target === scrim) dlg.close(undefined); });
   closeBtn.addEventListener("click", () => dlg.close(undefined));
 
