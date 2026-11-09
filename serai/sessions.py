@@ -683,7 +683,7 @@ def resume_flag(kind: str, resume: str, args: str = "") -> str:
 def create_argv(host: str, name: str, kind: str, path: str | None = None,
                 resume: str = "", history: int | None = None, args: str = "",
                 owner: str = "", tags: str = "", cols: int | None = None,
-                rows: int | None = None) -> list[str]:
+                rows: int | None = None, start_dir: str = "") -> list[str]:
     """Command that creates a detached session (``tmux new -d``).
 
     v3 attaches through a control-mode client (``tmuxctl``/``bridge``), so
@@ -697,8 +697,10 @@ def create_argv(host: str, name: str, kind: str, path: str | None = None,
     the harness drops the pane back to a shell prompt instead of killing the
     session (see _EXIT_SHELL).
 
-    `owner` and `tags` ride in the same command after `new`, so nothing ever
-    observes the session unowned or untagged in between.
+    `owner`, `tags`, `args` (as @serai_args) and `start_dir` (as @serai_dir,
+    already through clean_dir) ride in the same command after `new`, so nothing
+    ever observes the session without them -- and a separate set-option can't
+    race the create and fail on a session that doesn't exist yet.
 
     `resume` picks how a new agent session starts: "" -> new conversation,
     "continue" -> most recent in the dir, "resume" -> the interactive picker (for
@@ -753,6 +755,15 @@ def create_argv(host: str, name: str, kind: str, path: str | None = None,
         # set-option and read back through the `_SEP`-joined listing, so keep it
         # within the conservative charset exactly as for owner.
         tmux_cmd += [";", "set-option", "-t", name, "@serai_tags", ",".join(clean_tags(tags.split(",")))]
+    if args and spec:
+        # Agent-only, like the args themselves. clean_args output is
+        # shlex-quoted tokens, so it never ends in ';'.
+        tmux_cmd += [";", "set-option", "-t", name, "@serai_args", args]
+    if start_dir:
+        # Last on purpose: tmux treats an argument ending in ';' as a command
+        # separator, and a directory may end in one. As the final argument that
+        # can only end this command -- there is nothing after it to start.
+        tmux_cmd += [";", "set-option", "-t", name, "@serai_dir", start_dir]
 
     if host == "local":
         return tmux_cmd
@@ -828,6 +839,27 @@ def kill_argv(host: str, name: str) -> list[str]:
     return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in tmux_cmd)]
 
 
+def session_state(host: str, name: str) -> bool | None:
+    """True if the session exists, False if tmux says it doesn't, None if we
+    could not ask (ssh down or timed out, tmux missing).
+
+    The difference matters to ws_attach: "unknown" must neither take the create
+    path -- which skips the owner check -- nor end a client's reconnect loop
+    the way a genuinely gone session does. tmux exits 1 for "can't find
+    session" and "no server running"; ssh exits 255 for its own failures.
+    """
+    cmd = f"tmux has-session -t {shlex.quote('=' + name)}"
+    try:
+        out = subprocess.run(_tmux_argv(host, cmd), capture_output=True, timeout=6)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if out.returncode == 0:
+        return True
+    if out.returncode == 1:
+        return False
+    return None
+
+
 def session_exists(host: str, name: str) -> bool:
     """True if a tmux session with this name currently exists on `host`.
 
@@ -838,8 +870,7 @@ def session_exists(host: str, name: str) -> bool:
     default prefix matching would report "shell-x" as existing whenever
     "shell-x1" is running.
     """
-    cmd = f"tmux has-session -t {shlex.quote('=' + name)}"
-    return _run(_tmux_argv(host, cmd)) is not None
+    return session_state(host, name) is True
 
 
 def set_tags_argv(host: str, name: str, tags_csv: str) -> list[str]:

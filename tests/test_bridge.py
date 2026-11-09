@@ -435,3 +435,24 @@ def test_real_tmux_overflow_reseeds_and_the_screen_ends_consistent(tmux_env):
             b.close()
             await c.close()
     run(go())
+
+
+def test_every_seed_unpauses_the_pane_first():
+    """A %pause from before a snapshot is superseded by it -- but the pane must
+    flow again afterwards, whichever seed (initial, pane switch, overflow) ran."""
+    async def go():
+        c = FakeClient()
+
+        def paused_before_snapshot(cl):
+            cl.fire("pause", "%5")                 # seq <= the reply's: dropped...
+        c.during_batch = paused_before_snapshot
+        b, sink, tasks = await _bridge(c)
+        await _settle(b)
+        batch = next(x for x in c.sent if x[0] == "batch")
+        assert batch[1] == "refresh-client", "...because the seed line continued it"
+        c.fire("output", "%5", value=b"FLOWING")
+        await _settle(b)
+        assert sink.joined().endswith(b"FLOWING")
+        for t in tasks:
+            t.cancel()
+    run(go())

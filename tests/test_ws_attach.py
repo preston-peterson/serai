@@ -153,3 +153,55 @@ def test_failed_create_is_final(tmux, monkeypatch):
         c = Conn(ws)
         assert c.pump(lambda c: c.close_code is not None)
         assert c.close_code == 4410
+
+
+def test_new_session_gets_its_dir_and_args_in_the_create(tmux, tmp_path, monkeypatch):
+    """They ride the create command: a separate set-option raced it and failed
+    on a session that didn't exist yet."""
+    # A stand-in agent kind whose command is `true`: never launch a real agent
+    # CLI from a test (it would start with this test's HOME and network access).
+    monkeypatch.setitem(sessions._AGENTS, "fakeagent",
+                        {"cmd": "true", "prefix": "fa-", "chip": "fa", "glyph": "x", "resume": {}})
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    url = f"/ws/attach?host=local&kind=fakeagent&label=dirargs&path={proj}&args=--demo-flag"
+    with TestClient(app).websocket_connect(url) as ws:
+        assert Conn(ws).pump(_seeded)
+    show = lambda opt: tmux("show-options", "-v", "-t", "fa-dirargs", opt).stdout.strip()
+    assert show("@serai_dir") == str(proj)
+    assert show("@serai_args") == "--demo-flag"
+
+
+def test_create_argv_puts_the_dir_option_last():
+    # tmux reads an argument ending in ';' as a separator; a dir may end in one,
+    # so it must be the final argument, where it can only end its own command.
+    argv = sessions.create_argv("local", "cc-x", "claude", "/p", args="--a",
+                                owner="bob", tags="t", start_dir="/p;")
+    assert argv[-2:] == ["@serai_dir", "/p;"]
+    assert argv.index("@serai_args") < argv.index("@serai_dir")
+
+
+def test_session_state_tells_absent_from_unreachable(monkeypatch):
+    rc = {}
+
+    def fake_run(argv, **kw):
+        if rc["v"] == "timeout":
+            raise subprocess.TimeoutExpired(argv, 6)
+        return subprocess.CompletedProcess(argv, rc["v"])
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+    for value, want in ((0, True), (1, False), (255, None), (127, None), ("timeout", None)):
+        rc["v"] = value
+        assert sessions.session_state("local", "x") is want, value
+    rc["v"] = 255
+    assert sessions.session_exists("local", "x") is False
+
+
+def test_unreachable_host_neither_creates_nor_skips_the_owner_check(tmux, monkeypatch):
+    created = []
+    monkeypatch.setattr(sessions, "session_state", lambda host, name: None)
+    monkeypatch.setattr(sessions, "create_session", lambda argv: created.append(argv) or True)
+    with TestClient(app).websocket_connect("/ws/attach?host=local&kind=shell&label=down") as ws:
+        c = Conn(ws)
+        assert c.pump(lambda c: c.close_code is not None)
+    assert c.close_code == 1011, "unknown is retryable, never a final 4410"
+    assert created == []

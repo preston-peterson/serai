@@ -1379,14 +1379,18 @@ def test_kill_rejects_unknown_host(monkeypatch):
 
 
 def test_session_exists(monkeypatch):
-    cap = {}
-    monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6: (cap.__setitem__("argv", argv), "")[1])
+    cap = {"rc": 0}
+
+    def fake_run(argv, **kw):
+        cap["argv"] = argv
+        return subprocess.CompletedProcess(argv, cap["rc"])
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
     assert sessions.session_exists("local", "shell-x") is True
     assert cap["argv"] == ["tmux", "has-session", "-t", "=shell-x"]  # '=' -> exact match, not prefix
     sessions.session_exists("proj-web", "shell-x")
     assert cap["argv"][0] == "ssh" and cap["argv"][-1] == "tmux has-session -t =shell-x"
-    # a non-zero exit (no such session) -> _run returns None -> False
-    monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6: None)
+    # tmux's "can't find session" exit -> False
+    cap["rc"] = 1
     assert sessions.session_exists("local", "shell-x") is False
 
 

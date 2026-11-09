@@ -370,7 +370,7 @@ class Bridge:
         except ControlError:
             pass
         await self._idle.wait()          # everything already queued has gone out
-        await self._seed(continue_first=True)
+        await self._seed()
 
     async def _retarget(self) -> None:
         pane = await self._active_pane()
@@ -390,17 +390,19 @@ class Bridge:
             self._cols, self._rows = w, h
             self._put(json.dumps({"size": {"cols": w, "rows": h}}))
 
-    async def _seed(self, continue_first: bool = False) -> None:
+    async def _seed(self) -> None:
         pane = self._pane
         if pane is None:
             return
         self._state = _SEEDING
         self._held = []
         hist = max(1, self._history)
-        cmds: list[tuple[str, ...]] = []
-        if continue_first:
-            cmds.append(("refresh-client", "-A", _pane_state(pane, "continue")))
-        cmds += [
+        # Every seed starts by un-pausing the pane (an empty reply when it is
+        # not paused). Whoever paused it -- our overflow, tmux's pause-after, a
+        # %pause that landed before this snapshot -- the snapshot supersedes
+        # what was dropped, and output must flow again after it.
+        cmds: list[tuple[str, ...]] = [
+            ("refresh-client", "-A", _pane_state(pane, "continue")),
             ("display-message", "-p", "-t", pane, STATE_FMT),
             ("capture-pane", "-p", "-e", "-J", "-q", "-t", pane, "-S", str(-hist), "-E", "-1"),
             ("capture-pane", "-p", "-e", "-q", "-t", pane, "-S", "0", "-E", "-"),

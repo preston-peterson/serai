@@ -979,7 +979,13 @@ async def ws_attach(ws: WebSocket) -> None:
     # Filtering the *list* hides sessions, but only this stops them being opened.
     # (Still an organisational boundary, not a security one -- see _owns.)
     loop = asyncio.get_running_loop()
-    exists = await loop.run_in_executor(_pool, sessions.session_exists, host, name)
+    exists = await loop.run_in_executor(_pool, sessions.session_state, host, name)
+    if exists is None:
+        # Couldn't ask (ssh down). Not "absent": that would take the create path
+        # and skip the owner check. Retryable, so the client backs off and tries again.
+        await ws.send_text(json.dumps({"error": f"{host} is not answering"}))
+        await _close_ws(ws, 1011)
+        return
     claim = ""
     claim_tags = ""
     if exists:
@@ -997,29 +1003,30 @@ async def ws_attach(ws: WebSocket) -> None:
         # an existing name passes none, so its tags are never clobbered.
         claim_tags = ",".join(sessions.clean_tags((q.get("tags") or "").split(",")))
 
-    # Remember an explicit start dir on the session itself, so the file pane and a
-    # later recreate keep using it even after the shell cds elsewhere. Best
-    # effort: it must never stop the attach.
-    if path:
-        try:
-            loop.run_in_executor(
-                _pool, sessions.run_send, sessions.set_dir_argv(host, name, sessions.clean_dir(path)))
-        except ValueError:
-            pass
-
-    # Extra agent args, same deal. clean_args quotes every token, so nothing
-    # typed here reaches the shell unquoted (invariant #3); an unparseable value
-    # is dropped rather than guessed at, since an attach must not fail on it.
+    # Remember an explicit start dir and extra agent args on the session itself,
+    # so the file pane and a later recreate keep using them after the shell cds
+    # elsewhere. clean_args quotes every token (invariant #3); an unparseable
+    # value is dropped rather than guessed at -- an attach must not fail on it.
+    try:
+        start_dir = sessions.clean_dir(path) if path else ""
+    except ValueError:
+        start_dir = ""
     try:
         extra = sessions.clean_args(q.get("args") or "")
     except ValueError:
         extra = ""
-    if extra:
-        loop.run_in_executor(_pool, sessions.run_send, sessions.set_args_argv(host, name, extra))
-
-    if not exists:
+    if exists:
+        # Best effort, off the attach path. (A new session gets both inside its
+        # create command instead: a separate set-option would race the create.)
+        if start_dir:
+            loop.run_in_executor(_pool, sessions.run_send,
+                                 sessions.set_dir_argv(host, name, start_dir))
+        if extra:
+            loop.run_in_executor(_pool, sessions.run_send,
+                                 sessions.set_args_argv(host, name, extra))
+    else:
         argv = sessions.create_argv(host, name, kind, path, resume, history, extra,
-                                    claim, claim_tags, cols, rows)
+                                    claim, claim_tags, cols, rows, start_dir)
         # A False here is usually a racing create of the same name (another tab):
         # the attach below finds it. A real failure shows up as the attach failing.
         await loop.run_in_executor(_pool, sessions.create_session, argv)
@@ -1030,10 +1037,11 @@ async def ws_attach(ws: WebSocket) -> None:
     try:
         await client.start()
         await br.start()
-    except (tmuxctl.ControlClosed, tmuxctl.ControlError, ValueError) as exc:
+    except (tmuxctl.ControlClosed, tmuxctl.ControlError, ValueError, OSError) as exc:
         br.close()
         await client.close()
-        alive = await loop.run_in_executor(_pool, sessions.session_exists, host, name)
+        # Unknown (ssh down) counts as alive: retry, never a final 4410.
+        alive = await loop.run_in_executor(_pool, sessions.session_state, host, name) is not False
         try:
             await ws.send_text(json.dumps({"error": f"could not attach to {name}: {exc}"}))
         except RuntimeError:
@@ -1043,13 +1051,14 @@ async def ws_attach(ws: WebSocket) -> None:
         await _close_ws(ws, 1011 if alive else 4410)
         return
 
-    tasks = [asyncio.create_task(br.writer()), asyncio.create_task(br.maintain()),
-             asyncio.create_task(_pump_browser(ws, br))]
+    pump = asyncio.create_task(_pump_browser(ws, br))
+    tasks = [asyncio.create_task(br.writer()), asyncio.create_task(br.maintain()), pump]
     if WS_PING_INTERVAL > 0:
         tasks.append(asyncio.create_task(_ws_keepalive(br.ping)))
     tmux_gone = client.closed   # the client's own future; close() resolves it
     try:
         done, _ = await asyncio.wait([tmux_gone, *tasks], return_when=asyncio.FIRST_COMPLETED)
+        tmux_ended = tmux_gone.done()      # before close() below resolves it anyway
         for t in done:
             if t is not tmux_gone and not t.cancelled() and t.exception() is not None:
                 exc = t.exception()
@@ -1060,11 +1069,15 @@ async def ws_attach(ws: WebSocket) -> None:
             t.cancel()
         br.close()
         await client.close()
-    if tmux_gone in done:
+    if tmux_ended:
         # The control client ended on tmux's side. Session gone (the program
         # exited, it was killed, or tmux moved us off it) -> 4410 so the client
-        # does NOT auto-reattach, which would recreate it. Still alive (ssh
-        # dropped) -> a normal close, and the client reattaches.
+        # does NOT auto-reattach, which would recreate it. Still alive, or we
+        # can't tell (ssh dropped) -> a normal close, and the client reattaches.
         alive = (br.ended is None and
-                 await loop.run_in_executor(_pool, sessions.session_exists, host, name))
+                 await loop.run_in_executor(_pool, sessions.session_state, host, name) is not False)
         await _close_ws(ws, 1000 if alive else 4410)
+    elif pump not in done:
+        # Our side broke (a bridge task failed) while the browser is still
+        # there: say so with a retryable code rather than dropping the socket.
+        await _close_ws(ws, 1011)
