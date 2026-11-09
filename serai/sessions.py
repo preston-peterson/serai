@@ -175,14 +175,22 @@ def kinds() -> list[dict]:
 # A "working" signal read from the pane's *content*, per agent kind. A Claude TUI
 # shows "esc to interrupt" while a turn is actively running; that is the reliable
 # busy signal because these TUIs repaint constantly, so session_activity (activity
-# age) always looks fresh and is useless. grok/opencode don't (yet) have a known
-# equivalent, so they read "done" while working -- refine the strings below once
-# observed (the pane tail is what state detection sees).
+# age) always looks fresh and is useless. Matched lowercase against the last few
+# non-blank lines of the pane.
+#
+# Measured 2026-11-08 by running each TUI on a throwaway tmux through one turn
+# and diffing busy captures against idle ones (present in every busy frame, absent
+# from every idle one):
+#   opencode 1.19.5  footer "esc interrupt" beside its progress bar
+#   hermes   0.21.2  input hint "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
+# grok is still unmeasured (it was signed out at the time), so it reads "done"
+# while working; add its phrase here once observed. Spinner glyphs, verbs and
+# timers change frame to frame and are deliberately not used.
 _AGENT_BUSY = {
     "claude":   ("esc to interrupt", "esc to cancel"),
     "grok":     (),
-    "opencode": (),
-    "hermes":   (),
+    "opencode": ("esc interrupt",),
+    "hermes":   ("msg=interrupt",),
 }
 
 

@@ -279,6 +279,16 @@ def test_needs_input_detection_is_per_kind():
     assert st("claude", False, 120, "node", q) == "done"    # at prompt, recently active
     assert st("claude", True, 120, "node", q) == "idle"     # you're attached -> not "done"
     assert st("claude", False, 99999, "node", q) == "idle"  # dormant past the done window
+    # opencode / hermes: their measured busy footers (2026-11-08) mean working,
+    # whatever the activity age; without them they are parked like claude.
+    oc_busy = "▣▣▢▢▢  esc interrupt"
+    hm_busy = "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
+    assert st("opencode", False, 999, "opencode", oc_busy) == "running"
+    assert st("hermes", False, 999, "hermes", hm_busy) == "running"     # matched lowercase
+    assert st("opencode", False, 120, "opencode", q) == "done"
+    assert st("hermes", False, 120, "hermes", q) == "done"
+    # kind-scoped: another agent's footer means nothing here
+    assert st("grok", False, 120, "grok", oc_busy) == "done"
 
     # grok/opencode are agents too: they read their *content*, not the shell's
     # activity-age/foreground-command signals. A common marker still flags them.
@@ -353,26 +363,36 @@ def test_stuck_content_lines_drop_chrome_and_normalize():
 
 def test_stuck_poll_memory_counts_and_resets():
     # Signal 2: an unchanged chrome-stripped fingerprint across 3 listings -> stuck.
+    # grok is the example because it is the agent with no measured busy marker:
+    # a marker-less agent is admitted on the tail alone, while one with a marker
+    # (claude, opencode, hermes) must be showing it to count as looping.
     # This is the in-memory poll map; it must be fresh for the test.
     sessions._loop_memory.clear()
-    key = "host-a::oc-example-1"
+    key = "host-a::grok-example-1"
     tail = ["let me deploy and reproduce.",
             "let me deploy and reproduce.",
             "let me deploy and reproduce.",
             "let me deploy and reproduce."]
-    assert sessions._stuck_polls("opencode", key, tail, "") is False
-    assert sessions._stuck_polls("opencode", key, tail, "") is False
-    assert sessions._stuck_polls("opencode", key, tail, "") is True    # 3rd identical poll
+    assert sessions._stuck_polls("grok", key, tail, "") is False
+    assert sessions._stuck_polls("grok", key, tail, "") is False
+    assert sessions._stuck_polls("grok", key, tail, "") is True    # 3rd identical poll
     # A changed tail resets the run -- one difference and it starts counting again.
     changed = ["a different line.", "let me deploy and reproduce.", "let me deploy and reproduce."]
-    assert sessions._stuck_polls("opencode", key, changed, "") is False
-    assert sessions._stuck_polls("opencode", key, changed, "") is False
-    assert sessions._stuck_polls("opencode", key, changed, "") is True
+    assert sessions._stuck_polls("grok", key, changed, "") is False
+    assert sessions._stuck_polls("grok", key, changed, "") is False
+    assert sessions._stuck_polls("grok", key, changed, "") is True
     # A quietly parked agent (loop gate closed) never accumulates a stuck run.
     sessions._loop_memory.clear()
     assert sessions._stuck_polls("claude", key, ["I refactored the scheduler."], "") is False
     assert sessions._stuck_polls("claude", key, ["I refactored the scheduler."], "") is False
     assert sessions._stuck_polls("claude", key, ["I refactored the scheduler."], "") is False
+    # opencode now has a busy marker: the same static tail without it is parked...
+    sessions._loop_memory.clear()
+    for _ in range(3):
+        assert sessions._stuck_polls("opencode", key, tail, "") is False
+    # ...and with it showing, an unchanged view is a loop again.
+    for i in range(3):
+        assert sessions._stuck_polls("opencode", key, tail, "esc interrupt") is (i == 2)
     # A shell is never an across-poll stuck candidate.
     sessions._loop_memory.clear()
     assert sessions._stuck_polls("shell", key, tail, "") is False
@@ -427,17 +447,17 @@ def test_stuck_count_restarts_when_a_session_comes_back(monkeypatch):
     # A vanished session's count must not carry over: a name reused (or restarted)
     # starts from zero, so a fresh agent is never born `stuck`.
     now = int(time.time())
-    row = _row("oc-example-1", 0, now - 60, "", "opencode", 0, "", "", "", "/home/u/app")
+    row = _row("grok-example-1", 0, now - 60, "", "grok", 0, "", "", "", "/home/u/app")
     listings = _fake_discovery(monkeypatch, {"host-a": row}, "still reworking the parser.\n")
     sessions._loop_memory.clear()
-    key = "host-a::oc-example-1"
+    key = "host-a::grok-example-1"
 
     states = [sessions._list_sessions_uncached("host-a")[0].state for _ in range(3)]
     assert states == ["done", "done", "stuck"]
     assert sessions._loop_memory[key][1] == 3
 
     # gone from a successful listing (another session is live on the host)
-    listings["host-a"] = _row("oc-example-2", 0, now - 60, "", "opencode", 0, "", "", "", "/home/u/app")
+    listings["host-a"] = _row("grok-example-2", 0, now - 60, "", "grok", 0, "", "", "", "/home/u/app")
     sessions._list_sessions_uncached("host-a")
     assert key not in sessions._loop_memory
 
