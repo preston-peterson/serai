@@ -207,6 +207,13 @@ for raw in sys.stdin:
     elif line == "pause":
         emit("%pause %3")
         body = "ok"
+    elif line.startswith("burst"):
+        # A run of pane output, then an ordinary reply -- so a test can await
+        # the reply as proof the reader has drained every line before it.
+        count = int(line.split()[1]) if len(line.split()) > 1 else 50
+        for i in range(count):
+            emit(f"%output %3 line-{i}")
+        body = "burst"
     elif line == "hang":
         emit(f"%begin {1000 + n} {n} 1")
         continue  # never close the block: the reply simply never arrives
@@ -338,6 +345,73 @@ def test_subscribe_all_receives_everything():
         await c.send_command("pause")
         assert seen == ["session-changed", "pause"]
         await c.close()
+    run(main())
+
+
+def test_pause_reading_stops_the_reader_until_resume():
+    # The reader gate is what lets tmux's `pause-after` work: while paused the
+    # client reads nothing, so the backlog sits in the pipe/tmux buffer instead
+    # of in this process. Nothing reaches a subscriber, and the command's own
+    # reply block is unread too -- awaiting it is how we know the drain finished.
+    async def main():
+        c = _client(_fake_argv())
+        await c.start()
+        got = []
+        c.subscribe("output", got.append)
+        assert not c.reading_paused
+        c.pause_reading()
+        assert c.reading_paused
+        burst = asyncio.create_task(c.send_command("burst", "50"))
+        await asyncio.sleep(0.3)
+        assert got == []
+        assert not burst.done()
+        c.resume_reading()
+        assert not c.reading_paused
+        assert await asyncio.wait_for(burst, 3) == [b"burst"]
+        assert [ln.value for ln in got] == \
+            [f"line-{i}".encode() for i in range(50)]
+        await c.close()
+    run(main())
+
+
+def test_pause_reading_is_a_gate_not_a_counter():
+    # Two pauses, one resume: reading comes back. A counting semaphore would
+    # leave the reader wedged here (and the burst below never delivered).
+    async def main():
+        c = _client(_fake_argv())
+        await c.start()
+        got = []
+        c.subscribe("output", got.append)
+        c.pause_reading()
+        c.pause_reading()
+        assert c.reading_paused
+        burst = asyncio.create_task(c.send_command("burst", "5"))
+        await asyncio.sleep(0.2)
+        assert got == []
+        c.resume_reading()
+        assert await asyncio.wait_for(burst, 3) == [b"burst"]
+        assert [ln.value for ln in got] == \
+            [b"line-0", b"line-1", b"line-2", b"line-3", b"line-4"]
+        # resume again is a no-op, and reading is unaffected
+        c.resume_reading()
+        assert not c.reading_paused
+        assert await c.send_command("ok") == [b"ok"]
+        await c.close()
+    run(main())
+
+
+def test_close_while_paused_drains_and_resolves():
+    # close() resumes the reader before it waits for it, so a paused client
+    # still shuts down cleanly rather than burning the 2 s wait + cancel.
+    async def main():
+        c = _client(_fake_argv())
+        await c.start()
+        c.pause_reading()
+        await asyncio.wait_for(c.close(), 3)
+        assert c.closed.done()
+        assert c.closed.result() in ("eof", "exit")
+        with pytest.raises(ControlClosed):
+            await c.send_command("ok")
     run(main())
 
 
