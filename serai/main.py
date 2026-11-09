@@ -605,11 +605,10 @@ async def api_sessions(request: Request) -> JSONResponse:
         # null, so the star is always a definite filled/outline state.
         rec["favorite"] = bool((prior or {}).get("favorite"))
 
-    # The snapshot and the live-tracking are serai's own bookkeeping about the
-    # whole fleet, so they see everything regardless of who is asking. Only the
-    # *response* is scoped to the caller.
+    # The snapshot is serai's own bookkeeping about the whole fleet, so it sees
+    # everything regardless of who is asking. Only the *response* is scoped to
+    # the caller.
     await loop.run_in_executor(_pool, store.upsert, flat)  # saved profiles; /exit keeps them
-    store.mark_live([f"{s['host']}::{s['name']}" for s in flat])  # for resume-after-exit
     return JSONResponse([s for s in flat if _owns(sess, s.get("owner", ""))])
 
 
@@ -623,120 +622,6 @@ async def api_sessions_saved(request: Request) -> JSONResponse:
     known = _known_hosts()
     return JSONResponse([r for r in saved
                          if r.get("host") in known and _owns(sess, r.get("owner", ""))])
-
-
-@app.get("/api/sessions/exited")
-async def api_sessions_exited(request: Request) -> JSONResponse:
-    """Agent sessions seen live earlier this run but no longer live -- offered
-    on the board as one-click resume. Distinct from /saved (the full post-reboot
-    snapshot): this is the narrow "you just /exited this, resume it?" case,
-    recency-scoped so old exits don't pile up. Known hosts only, and only the
-    caller's own."""
-    sess = _session(request)
-    loop = asyncio.get_event_loop()
-    exited = await loop.run_in_executor(_pool, store.recently_exited)
-    known = _known_hosts()
-    return JSONResponse([r for r in exited
-                         if r.get("host") in known and _owns(sess, r.get("owner", ""))])
-
-
-@app.post("/api/sessions/restore")
-async def api_sessions_restore(request: Request) -> JSONResponse:
-    """Recreate saved sessions (detached) so they are back after a reboot.
-
-    Body may carry ``{"targets": [{"host", "name", "resume"}, ...]}`` to resume a
-    chosen subset; without it every saved session is restored. Targets *select*
-    snapshot entries and may choose how an agent session comes back (``continue``
-    the last conversation, ``resume`` to open its picker, or ``""`` for a fresh
-    one, defaulting to ``continue``). Everything else -- kind, path, tags -- comes
-    from serai's own snapshot, never the request, the host is re-validated
-    against the ssh config, and the resume choice is checked against a fixed set,
-    so it all stays argv-safe (invariant #3). Sessions that are already running
-    are skipped, and every session's tags are reapplied.
-    """
-    sess = _session(request)
-    loop = asyncio.get_event_loop()
-    saved = await loop.run_in_executor(_pool, store.saved)
-    # Restore only what the caller owns. Done here, before any target selection,
-    # so a client naming someone else's session can't reach it either.
-    saved = [r for r in saved if _owns(sess, r.get("owner", ""))]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    targets = body.get("targets") if isinstance(body, dict) else None
-    picks: dict[str, str] = {}  # host::name -> how that agent session comes back
-    arg_picks: dict[str, str] = {}   # host::name -> extra agent args, if edited
-    if isinstance(targets, list):
-        for t in targets:
-            if isinstance(t, dict):
-                key = f"{t.get('host')}::{t.get('name')}"
-                picks[key] = str(t.get("resume", "continue"))
-                # Only an explicitly-present key overrides the snapshot: a client
-                # that doesn't send `args` must not be read as "clear them".
-                if "args" in t:
-                    arg_picks[key] = str(t.get("args") or "")
-        saved = [r for r in saved if f"{r.get('host')}::{r.get('name')}" in picks]
-    known = _known_hosts()
-
-    async def recreate(r: dict) -> dict:
-        host = r.get("host", "local")
-        name = r.get("name") or ""
-        if host not in known or not name:
-            return {"host": host, "name": name, "ok": False, "error": "invalid target"}
-        # Skip sessions that are already running (recreated by hand, or a remote
-        # host that never rebooted). Without this, `tmux new -A -d` tries to
-        # *attach* to the existing session and fails outside a terminal, so a
-        # restore over a half-alive fleet reported spurious failures.
-        if await loop.run_in_executor(_pool, sessions.session_exists, host, name):
-            return {"host": host, "name": name, "ok": True, "skipped": True}
-        # The one thing a target may choose (kind/path/tags still come only from
-        # the snapshot): how an agent session relaunches. Validated against a
-        # fixed set, so an unrecognised value can't mean anything but "fresh".
-        resume = picks.get(f"{host}::{name}", "continue")
-        if resume not in sessions.RESUME_CHOICES:
-            resume = "continue"
-        # Extra agent args: the banner may edit them per session, otherwise
-        # they come from the snapshot. Either way they are re-cleaned here, so
-        # neither a client nor an old hand-edited record can smuggle anything
-        # unquoted into the command (invariant #3).
-        key = f"{host}::{name}"
-        raw_args = arg_picks[key] if key in arg_picks else (r.get("args", "") or "")
-        try:
-            extra = sessions.clean_args(raw_args)
-        except ValueError:
-            extra = ""
-        argv = sessions.restore_argv(host, name, r.get("kind", "shell"),
-                                     r.get("path", "") or "", resume, extra)
-        ok = await loop.run_in_executor(_pool, sessions.run_send, argv)
-        tags = sessions.clean_tags(r.get("tags") or [])
-        if ok and tags:
-            await loop.run_in_executor(_pool, sessions.run_send,
-                                       sessions.set_tags_argv(host, name, ",".join(tags)))
-        # Re-apply the args to the recreated session so the next poll sees them
-        # and the snapshot's sticky rule has something live to agree with.
-        if ok and extra:
-            await loop.run_in_executor(_pool, sessions.run_send,
-                                       sessions.set_args_argv(host, name, extra))
-        # An edit made in the banner is a deliberate change, including a clear --
-        # record it so the sticky rule can't resurrect the old value.
-        if ok and key in arg_picks:
-            await loop.run_in_executor(_pool, store.set_args, host, name, extra)
-        # Re-stamp the owner, or the restored session comes back unowned -- which
-        # would make it admin-only and so vanish from the board of the very user
-        # whose session it is.
-        owner = sessions.clean_owner(r.get("owner", "") or "")
-        if ok and owner:
-            await loop.run_in_executor(_pool, sessions.run_send,
-                                       sessions.set_owner_argv(host, name, owner))
-        return {"host": host, "name": name, "ok": bool(ok)}
-
-    results = await asyncio.gather(*[recreate(r) for r in saved])
-    sessions.clear_cache()  # so the next poll shows the recreated sessions
-    restored = sum(1 for r in results if r["ok"] and not r.get("skipped"))
-    return JSONResponse({"restored": restored,
-                         "skipped": sum(1 for r in results if r.get("skipped")),
-                         "results": results})
 
 
 @app.get("/api/files")

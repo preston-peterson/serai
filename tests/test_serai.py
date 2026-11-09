@@ -1969,28 +1969,7 @@ def test_tls_byo_missing_or_half_set_raises(tmp_path, monkeypatch):
         tls.resolve()
 
 
-# --- session restore after reboot -----------------------------------------
-
-def test_restore_argv_local_and_remote():
-    cl = sessions.restore_argv("local", "cc-x", "claude", "/home/u/app")
-    assert cl == ["tmux", "new", "-A", "-d", "-s", "cc-x", "-c", "/home/u/app",
-                  "claude --continue" + sessions._EXIT_SHELL]
-    sh = sessions.restore_argv("local", "shell-y", "shell", "/home/u")
-    assert sh == ["tmux", "new", "-A", "-d", "-s", "shell-y", "-c", "/home/u"]  # no command -> a shell
-    rem = sessions.restore_argv("web1", "cc-z", "claude", "/srv/app")
-    assert rem[0] == "ssh" and rem[-2] == "web1" and "BatchMode=yes" in rem
-    assert rem[-1] == ("tmux new -A -d -s cc-z -c /srv/app"
-                       " 'claude --continue; exec ${SHELL:-/bin/sh}'")
-
-
-def test_restore_argv_path_stays_a_single_argv_element():
-    # a path with spaces / shell metachars must stay one argv element (invariant #3)
-    hostile = "/home/u/my proj; rm -rf /"
-    av = sessions.restore_argv("local", "shell-x", "shell", hostile)
-    assert av[av.index("-c") + 1] == hostile          # present verbatim, one element
-    rem = sessions.restore_argv("web1", "shell-x", "shell", hostile)[-1]
-    assert "'/home/u/my proj; rm -rf /'" in rem        # shlex.quote keeps it intact for ssh
-
+# --- saved session profiles ------------------------------------------------
 
 def test_store_snapshot_keeps_missing_and_updates_tags(tmp_path, monkeypatch):
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
@@ -2009,96 +1988,19 @@ def test_store_snapshot_keeps_missing_and_updates_tags(tmp_path, monkeypatch):
     assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
 
 
-def test_api_sessions_saved_and_restore(tmp_path, monkeypatch):
+def test_api_sessions_saved_lists_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
     store.upsert([
         {"host": "local", "name": "cc-proj", "kind": "claude", "label": "proj",
          "path": "/home/u/proj", "tags": ["prod"]},
         {"host": "local", "name": "shell-x", "kind": "shell", "label": "x", "path": "/home/u", "tags": []},
     ])
-    c = TestClient(app)
-    saved = c.get("/api/sessions/saved").json()
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    saved = TestClient(app).get("/api/sessions/saved").json()
     assert {r["name"] for r in saved} == {"cc-proj", "shell-x"}
-
-    calls = []
-    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: (calls.append(argv) or True))
-    monkeypatch.setattr(sessions, "session_exists", lambda host, name: False)
-    r = c.post("/api/sessions/restore").json()
-    assert r["restored"] == 2 and r["skipped"] == 0
-    # claude recreated detached w/ --continue in its dir; shell recreated; tags reapplied
-    assert ["tmux", "new", "-A", "-d", "-s", "cc-proj", "-c", "/home/u/proj",
-            "claude --continue" + sessions._EXIT_SHELL] in calls
-    assert ["tmux", "new", "-A", "-d", "-s", "shell-x", "-c", "/home/u"] in calls
-    assert ["tmux", "set-option", "-t", "cc-proj", "@serai_tags", "prod"] in calls
-
-
-def test_api_restore_skips_running_sessions(tmp_path, monkeypatch):
-    # Already-running sessions (recreated by hand, or a remote host that never
-    # rebooted) must be skipped: `tmux new -A -d` on an existing session tries to
-    # attach and fails without a tty, so blind recreation reports false failures.
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store.upsert([
-        {"host": "local", "name": "shell-alive", "kind": "shell", "label": "alive", "path": "/a", "tags": []},
-        {"host": "local", "name": "shell-dead", "kind": "shell", "label": "dead", "path": "/d", "tags": []},
-    ])
-    calls = []
-    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: (calls.append(argv) or True))
-    monkeypatch.setattr(sessions, "session_exists", lambda host, name: name == "shell-alive")
-    r = TestClient(app).post("/api/sessions/restore").json()
-    assert r["restored"] == 1 and r["skipped"] == 1
-    skipped = next(x for x in r["results"] if x["name"] == "shell-alive")
-    assert skipped["ok"] is True and skipped.get("skipped") is True
-    assert not any("shell-alive" in " ".join(a) for a in calls)   # nothing run for it
-    assert any("shell-dead" in " ".join(a) for a in calls)        # the dead one recreated
-
-
-def test_api_restore_honours_per_session_resume(tmp_path, monkeypatch):
-    # A target may choose how its Claude session comes back. Everything else still
-    # comes from the snapshot, and an unrecognised choice falls back to continue.
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store.upsert([
-        {"host": "local", "name": "cc-a", "kind": "claude", "label": "a", "path": "/a", "tags": []},
-        {"host": "local", "name": "cc-b", "kind": "claude", "label": "b", "path": "/b", "tags": []},
-        {"host": "local", "name": "cc-c", "kind": "claude", "label": "c", "path": "/c", "tags": []},
-        {"host": "local", "name": "cc-d", "kind": "claude", "label": "d", "path": "/d", "tags": []},
-    ])
-    calls = []
-    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: (calls.append(argv) or True))
-    monkeypatch.setattr(sessions, "session_exists", lambda host, name: False)
-    TestClient(app).post("/api/sessions/restore", json={"targets": [
-        {"host": "local", "name": "cc-a", "resume": "continue"},
-        {"host": "local", "name": "cc-b", "resume": "resume"},
-        {"host": "local", "name": "cc-c", "resume": ""},          # fresh
-        {"host": "local", "name": "cc-d", "resume": "; rm -rf /"},  # nonsense -> continue
-    ]})
-    launched = {a[a.index("-s") + 1]: a[-1].removesuffix(sessions._EXIT_SHELL)
-                for a in calls if "-s" in a}
-    assert launched["cc-a"] == "claude --continue"
-    assert launched["cc-b"] == "claude --resume"
-    assert launched["cc-c"] == "claude"                 # fresh conversation
-    assert launched["cc-d"] == "claude --continue"      # never the raw value
-
-
-def test_api_restore_targets_pick_a_subset(tmp_path, monkeypatch):
-    # {"targets": [...]} selects snapshot entries; kind/path/tags still come from
-    # the snapshot, and unknown targets are ignored rather than executed.
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store.upsert([
-        {"host": "local", "name": "shell-a", "kind": "shell", "label": "a", "path": "/a", "tags": []},
-        {"host": "local", "name": "shell-b", "kind": "shell", "label": "b", "path": "/b", "tags": []},
-    ])
-    calls = []
-    monkeypatch.setattr(sessions, "run_send", lambda argv, timeout=6: (calls.append(argv) or True))
-    monkeypatch.setattr(sessions, "session_exists", lambda host, name: False)
-    r = TestClient(app).post("/api/sessions/restore", json={"targets": [
-        {"host": "local", "name": "shell-b"},
-        {"host": "local", "name": "shell-not-saved"},   # not in the snapshot -> ignored
-    ]}).json()
-    assert r["restored"] == 1
-    joined = [" ".join(a) for a in calls]
-    assert any("shell-b" in c and "-c /b" in c for c in joined)   # path from the snapshot
-    assert not any("shell-a" in c for c in joined)                # unselected stays untouched
-    assert not any("shell-not-saved" in c for c in joined)        # never executed
+    proj = next(r for r in saved if r["name"] == "cc-proj")
+    assert proj["path"] == "/home/u/proj" and proj["tags"] == ["prod"], \
+        "the profile carries what a launch needs"
 
 
 def test_file_ops_local_roundtrip(tmp_path):
@@ -2937,14 +2839,12 @@ def test_clean_args_is_idempotent_and_rejects_the_unparseable():
     assert sessions.clean_args("--include a::b") == "--include a::b"
 
 
-def test_extra_args_reach_claude_in_both_builders():
+def test_extra_args_reach_claude_in_attach_argv():
     argv = sessions.attach_argv("local", "cc-x", "claude", path="/tmp/proj",
                                 resume="resume", args="--chrome")
     assert "cd /tmp/proj && claude --resume --chrome" + sessions._EXIT_SHELL in argv
     assert "claude --chrome" + sessions._EXIT_SHELL in \
         sessions.attach_argv("local", "cc-x", "claude", args="--chrome")
-    restore = sessions.restore_argv("local", "cc-x", "claude", "/tmp/proj", "resume", "--chrome")
-    assert "claude --resume --chrome" + sessions._EXIT_SHELL in restore
     # a shell has no command of ours to carry them, so they're ignored there
     assert not any("--chrome" in a for a in
                    sessions.attach_argv("local", "shell-x", "shell", args="--chrome"))
@@ -3130,43 +3030,39 @@ def test_args_win_over_the_resume_dropdown():
         assert sessions.resume_flag("opencode", "resume", a) == "", a
     # ...and a lookalike must not suppress it
     assert sessions.resume_flag("claude", "resume", "--resumable") == " --resume"
-    # end to end through both builders
-    assert "claude --continue --resume" not in " ".join(
-        sessions.restore_argv("local", "cc-x", "claude", "/tmp/p", "continue", "--resume"))
-    assert "claude --resume" in " ".join(
-        sessions.restore_argv("local", "cc-x", "claude", "/tmp/p", "continue", "--resume"))
+    # end to end through the builder
     assert "claude --chrome" in sessions.attach_argv(
         "local", "cc-x", "claude", resume="continue", args="--chrome --resume")[5]
 
 
-def test_restore_takes_edited_args_but_absence_means_keep(monkeypatch, tmp_path):
-    """The banner may edit a session's args. A target that omits `args` entirely
-    must fall back to the snapshot -- absent is not the same as cleared."""
+def test_args_api_edit_is_recorded_and_absence_means_keep(monkeypatch, tmp_path):
+    """The args endpoint records the edit (including a clear) into the profile, and
+    a later poll that carries no args must not resurrect the old value."""
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
-    monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: False)
     sent = []
     monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: sent.append(argv) or True)
     store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
                    "path": "/home/u/p", "tags": [], "args": "--chrome"}])
     client = TestClient(app)
 
-    client.post("/api/sessions/restore",
-                json={"targets": [{"host": "local", "name": "cc-x", "resume": "resume"}]})
-    assert any("claude --resume --chrome" in " ".join(a) for a in sent), "snapshot args used"
-
-    sent.clear()
-    client.post("/api/sessions/restore",
-                json={"targets": [{"host": "local", "name": "cc-x", "resume": "resume",
-                                   "args": "--model opus"}]})
-    assert any("claude --resume --model opus" in " ".join(a) for a in sent), "edited args used"
+    r = client.post("/api/args", json={"host": "local", "name": "cc-x", "args": "--model opus"})
+    assert r.status_code == 200 and r.json()["args"] == "--model opus"
+    assert any("@serai_args" in " ".join(a) and "--model opus" in " ".join(a) for a in sent), \
+        "the new args are what gets applied to the session"
     assert store.saved()[0]["args"] == "--model opus", "an edit is recorded, not just applied"
 
-    # an edited clear sticks rather than being resurrected by the sticky rule
-    sent.clear()
-    client.post("/api/sessions/restore",
-                json={"targets": [{"host": "local", "name": "cc-x", "resume": "resume",
-                                   "args": ""}]})
+    # a poll that sees the session bare (no @serai_args) keeps the stored value --
+    # absent is not the same as cleared
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/p", "tags": [], "args": ""}])
+    assert store.saved()[0]["args"] == "--model opus"
+
+    # an explicit clear, by contrast, sticks rather than being resurrected
+    client.post("/api/args", json={"host": "local", "name": "cc-x", "args": ""})
+    assert store.saved()[0]["args"] == ""
+    store.upsert([{"host": "local", "name": "cc-x", "kind": "claude", "label": "x",
+                   "path": "/home/u/p", "tags": [], "args": ""}])
     assert store.saved()[0]["args"] == ""
 
 
@@ -3437,82 +3333,30 @@ def test_alternate_screen_flag_parsed_without_shifting_the_path(monkeypatch):
     assert by["shell-tui"].as_dict()["alt"] is True     # reaches the client
 
 
-# --- resume after /exit (v2.18.x) ------------------------------------------
-# A claude session seen live this run, then gone (a `/exit`), is offered for
-# resume. Recency-scoped, claude-only, and never for an explicitly-killed one.
+# --- what a launch starts from ---------------------------------------------
+# The profile is the launcher: it carries enough to start an agent session again,
+# and an explicit forget (store.remove, behind ✕) drops it for good. Nothing is
+# offered automatically -- + New / the palette read /api/sessions/saved.
 
-def test_recently_exited_offers_a_vanished_claude_session(tmp_path, monkeypatch):
+def test_saved_profile_carries_enough_to_relaunch(tmp_path, monkeypatch):
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store._seen_live.clear(); store._live_now = set()
     store.upsert([
         {"host": "local", "name": "cc-web", "kind": "claude", "label": "web", "path": "/w", "tags": ["p"]},
+        {"host": "local", "name": "grok-api", "kind": "grok", "label": "api", "path": "/a", "tags": []},
         {"host": "local", "name": "shell-x", "kind": "shell", "label": "x", "path": "/x", "tags": []},
     ])
-    store.mark_live(["local::cc-web", "local::shell-x"])   # both seen live
-    store.mark_live([])                                    # next poll: both gone
-    ex = store.recently_exited()
-    names = [r["name"] for r in ex]
-    assert names == ["cc-web"], "an agent session resumes; a shell does not"
-    assert ex[0]["path"] == "/w" and ex[0]["tags"] == ["p"]   # enough to relaunch
+    by = {r["name"]: r for r in store.saved()}
+    assert set(by) == {"cc-web", "grok-api", "shell-x"}, "every kind keeps its profile"
+    assert by["cc-web"]["path"] == "/w" and by["cc-web"]["tags"] == ["p"]
+    assert by["cc-web"]["kind"] == "claude" and by["grok-api"]["kind"] == "grok"
 
 
-def test_recently_exited_offers_every_agent_kind(tmp_path, monkeypatch):
-    """grok and opencode are first-class agents too, not just claude."""
+def test_forgetting_a_session_drops_its_profile_for_good(tmp_path, monkeypatch):
     monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store._seen_live.clear(); store._live_now = set()
-    store.upsert([
-        {"host": "local", "name": "grok-api", "kind": "grok", "label": "api", "path": "/a", "tags": []},
-        {"host": "local", "name": "oc-web", "kind": "opencode", "label": "web", "path": "/w", "tags": []},
-    ])
-    store.mark_live(["local::grok-api", "local::oc-web"])
-    store.mark_live([])                                     # both gone
-    names = [r["name"] for r in store.recently_exited()]
-    assert sorted(names) == ["grok-api", "oc-web"], "every agent kind is resumable"
-
-
-def test_recently_exited_excludes_still_live_and_never_seen(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store._seen_live.clear(); store._live_now = set()
-    store.upsert([{"host": "local", "name": "cc-a", "kind": "claude", "label": "a", "path": "/a", "tags": []}])
-    store.mark_live(["local::cc-a"])                       # still live
-    assert store.recently_exited() == []                  # live -> not offered
-
-
-def test_recently_exited_respects_the_window(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store._seen_live.clear(); store._live_now = set()
-    store.upsert([{"host": "local", "name": "cc-old", "kind": "claude", "label": "old", "path": "/o", "tags": []}])
-    store.mark_live(["local::cc-old"])
-    store.mark_live([])                                    # exited now
-    assert [r["name"] for r in store.recently_exited(window=10_000)] == ["cc-old"]
-    assert store.recently_exited(window=0) == []           # outside the window
-
-
-def test_recently_exited_skips_an_explicitly_killed_session(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    store._seen_live.clear(); store._live_now = set()
     store.upsert([{"host": "local", "name": "cc-k", "kind": "claude", "label": "k", "path": "/k", "tags": []}])
-    store.mark_live(["local::cc-k"]); store.mark_live([])
-    store.remove("local", "cc-k")                          # the ✕ kill drops the snapshot record
-    assert store.recently_exited() == [], "a deliberate kill must not offer resume"
-
-
-def test_api_sessions_exited_endpoint(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr("serai.main.config.parse_ssh_config", lambda: [])
-    store._seen_live.clear(); store._live_now = set()
-    c = TestClient(app)
-    # a live claude session, then it exits
-    monkeypatch.setattr("serai.main.sessions.list_sessions",
-                        lambda t: [sessions.Session(host="local", name="cc-x", kind="claude",
-                                                    label="x", state="running", attached=True,
-                                                    tags=[], path="/x")] if t == "local" else [])
-    assert c.get("/api/sessions").json()[0]["name"] == "cc-x"   # seen live
-    assert c.get("/api/sessions/exited").json() == []           # still live -> nothing
-    monkeypatch.setattr("serai.main.sessions.list_sessions", lambda t: [])  # it exited
-    c.get("/api/sessions")                                       # poll notices it gone
-    ex = c.get("/api/sessions/exited").json()
-    assert [r["name"] for r in ex] == ["cc-x"]
+    store.remove("local", "cc-k")                          # the ✕ kill drops the profile
+    assert store.saved() == [], "a deliberate forget must not leave a launcher behind"
+    assert store.get("local", "cc-k") is None
 
 
 # --- the shared body -> host -> owner gate (serai.main._target) --------------

@@ -13,7 +13,7 @@ strip the prefix for display:
     anything else    -> kind="shell", label = full name
 
 The coding agents (claude/grok/opencode/hermes) are "first-class": each has its own
-prefix, its own command that `attach_argv`/`restore_argv` run in the project
+prefix, its own command that `attach_argv` runs in the project
 dir, and its own resume-flag mapping. Everything that makes a kind an agent --
 rather than a shell -- is looked up in the `_AGENTS` table below, so adding a
 new agent is a one-line change there plus a row in the UI.
@@ -123,7 +123,7 @@ _MARKERS = _build_markers()
 # "resume" choice maps to a flag on *its own* command line, and the two display
 # fields the UI draws for it (`chip`, the board/rail badge; `glyph`, the icon).
 # Anything not in this table is a shell. This is the single place that makes a
-# kind an agent -- session_name / attach_argv / restore_argv / _state_for all
+# kind an agent -- session_name / attach_argv / _state_for all
 # look up here -- and, with SHELL_KIND below and `kinds()`, the single kinds
 # table the frontend is served from (GET /api/kinds) instead of forking its own.
 #
@@ -656,11 +656,6 @@ def session_name(kind: str, label: str) -> str:
     return f"{prefix}{label}"
 
 
-# The ways an agent session can come back: fresh, pick the last conversation up,
-# or open its resume picker. A value outside this set falls back to fresh, since
-# the mapping is a lookup rather than interpolation -- nothing to inject.
-RESUME_CHOICES = ("", "continue", "resume")
-
 # Does the user's own args already say how the session comes back? Matches the
 # long forms every agent's CLI uses: claude/grok take --resume/--continue,
 # opencode takes --continue/--session. (Short forms like -c/-r aren't matched --
@@ -772,34 +767,6 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
     if host == "local":
         return tmux_cmd
     return ["ssh", *_SSH_OPTS, "-t", host, " ".join(shlex.quote(p) for p in tmux_cmd)]
-
-
-def restore_argv(host: str, name: str, kind: str, path: str = "", resume: str = "continue",
-                 args: str = "") -> list[str]:
-    """Recreate a session *detached* (``tmux new -A -d``) so it exists again after
-    a reboot without opening a terminal. Idempotent: ``-A`` no-ops if the session
-    already exists (the command only runs on create). Agent sessions relaunch
-    their own command with ``--continue`` by default -- picking the last
-    conversation back up in that dir -- while shells come back as a fresh shell.
-    The saved working dir is passed as tmux's ``-c`` start-directory, a separate
-    argv element that is never interpolated, so it stays argv-safe; remote hosts
-    wrap the same tmux command in ssh (invariant #3).
-    """
-    cmd = ["tmux", "new", "-A", "-d", "-s", name]
-    if path:
-        cmd += ["-c", path]
-    spec = _AGENTS.get(kind)
-    if spec:
-        # args arrives already shlex-quoted from clean_args (invariant #3), and
-        # suppresses our resume flag when it carries one of its own. Same
-        # drop-to-prompt tail as attach_argv: an agent that finishes (or dies on
-        # start, e.g. a bad resume flag) leaves a live session at a shell prompt
-        # rather than vanishing from the board.
-        cmd.append(spec["cmd"] + resume_flag(kind, resume, args)
-                   + (f" {args}" if args else "") + _EXIT_SHELL)
-    if host == "local":
-        return cmd
-    return ["ssh", *_SSH_OPTS, host, " ".join(shlex.quote(p) for p in cmd)]
 
 
 def send_keys_argv(host: str, name: str, text: str) -> list[str]:
