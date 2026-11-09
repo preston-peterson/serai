@@ -10,14 +10,17 @@ import { logout } from "../features/login.js";
 
 let tagBtn = null;
 let slots = null;
+let leftSlots = null;
 let avatar = null;
 const buttons = [];
 
 export function mount(el) {
   tagBtn = h("button.btn.tagpick", { type: "button", title: "Workspace: filter the rail by tag", onclick: (e) => tagMenu(e.currentTarget) });
   slots = h("div.slots");
+  leftSlots = h("div.slots.left");
   avatar = h("button.avatar", { type: "button", title: "Account", onclick: (e) => accountMenu(e.currentTarget) });
-  el.replaceChildren(h("div.brand", { title: "serai" }, "ser", h("b", "a"), "i"), tagBtn, h("div.spacer"), slots, avatar);
+  el.replaceChildren(h("div.brand", { title: "serai" }, "ser", h("b", "a"), "i"), tagBtn, leftSlots,
+    h("div.spacer"), slots, avatar);
   store.set({ tag: remember("tag") || "" });
   store.subscribe(["sessions", "tag"], renderTag);
   store.subscribe(["auth"], renderAvatar);
@@ -25,11 +28,13 @@ export function mount(el) {
   renderAvatar();
 }
 
-/** addButton({order, el}) -- lower order sits further left. */
+/** addButton(order, el) -- lower order sits further left. A negative order
+ *  goes in the left group, right after the tag picker (the board's ⊞). */
 export function addButton(order, el) {
   buttons.push({ order, el });
   buttons.sort((a, b) => a.order - b.order);
-  slots.replaceChildren(...buttons.map((b) => b.el));
+  leftSlots.replaceChildren(...buttons.filter((b) => b.order < 0).map((b) => b.el));
+  slots.replaceChildren(...buttons.filter((b) => b.order >= 0).map((b) => b.el));
 }
 
 function tagCounts() {

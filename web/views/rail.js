@@ -140,13 +140,15 @@ export function openSession(s, where = "focused") {
   panes.open({ host: s.host, name: s.name, kind: s.kind, label: s.label }, where);
 }
 
-function rowMenu(s, at, rowEl) {
+/** The one per-session menu: the rail's ⋮ and the board's cards use it.
+ *  rowEl (optional) gets .menu-open while the menu is up. */
+export function rowMenu(s, at, rowEl) {
   const info = kindInfo(s.kind);
   const fav = isFavorite(s);
   const saved = (store.get().saved || []).find((r) => r.host === s.host && r.name === s.name);
   const launch = (saved && saved.launch) || "resume";
   const flag = launch === "new" ? "" : (info.resume[launch] || "");
-  rowEl.classList.add("menu-open");
+  if (rowEl) rowEl.classList.add("menu-open");
   openMenu(at, [
     hooks.edit ? { label: "Edit session…", icon: "✎", onClick: () => hooks.edit(s) } : null,
     { label: fav ? "Remove from favorites" : "Add to favorites", icon: "★", onClick: () => setFavorite(s, !fav) },
@@ -156,7 +158,7 @@ function rowMenu(s, at, rowEl) {
       hint: `${info.cmd} exited; the session is at a shell prompt` } : null,
     "sep",
     { label: "Close session…", icon: "✕", danger: true, onClick: () => closeSession(s) },
-  ].filter(Boolean), { onClose: () => rowEl.classList.remove("menu-open") });
+  ].filter(Boolean), { onClose: () => rowEl && rowEl.classList.remove("menu-open") });
 }
 
 async function setFavorite(s, favorite) {
