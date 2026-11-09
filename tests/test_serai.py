@@ -3396,3 +3396,110 @@ def test_api_sessions_exited_endpoint(tmp_path, monkeypatch):
     c.get("/api/sessions")                                       # poll notices it gone
     ex = c.get("/api/sessions/exited").json()
     assert [r["name"] for r in ex] == ["cc-x"]
+
+
+# --- the shared body -> host -> owner gate (serai.main._target) --------------
+
+# Every mutating session route, each with the extra fields it reads off the body
+# once the shared gate has accepted host+name. /api/broadcast is deliberately
+# absent: it validates a *list* of targets and reports per-target errors, so it
+# has a different shape and keeps its own checks.
+_MUTATING_ROUTES = [
+    ("/api/rename", {"kind": "claude", "label": "example"}),
+    ("/api/kill", {}),
+    ("/api/sessions/restart", {}),
+    ("/api/args", {"args": "--chrome"}),
+    ("/api/tags", {"tags": ["work"]}),
+    ("/api/favorite", {"favorite": True}),
+    ("/api/dir", {"path": "/tmp"}),
+]
+
+
+def _gate_world(monkeypatch, tmp_path, username="bob", admin=False):
+    """Hermetic world for the gate: one invented allowlisted host, one session
+    owned by someone else, and the caller as `username`.
+
+    `run_send` raises on purpose -- a request the gate rejects must never reach
+    tmux at all, so any route that checks after acting instead of before fails
+    loudly rather than quietly passing."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "host-a"})
+
+    def no_tmux(argv):
+        raise AssertionError(f"a rejected request reached tmux: {argv}")
+
+    monkeypatch.setattr("serai.main.sessions.run_send", no_tmux)
+    monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: True)
+    monkeypatch.setattr("serai.main.sessions.get_owner", lambda h, n: "alice")
+    _as_user(monkeypatch, username, admin=admin)
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("path,extra", _MUTATING_ROUTES)
+def test_target_rejects_a_bad_body_or_name(monkeypatch, tmp_path, path, extra):
+    """A body that isn't a JSON object, and a name that isn't a non-empty string,
+    are the same 400 `invalid target` on every route that names a session. (The
+    copy each route used to hand-roll answered 500 on a bare `[]`, because
+    `body.get` blew up on a list.)"""
+    client = _gate_world(monkeypatch, tmp_path)
+    bodies = {
+        "non-dict body": [],
+        "missing name": {"host": "local"},
+        "empty name": {"host": "local", "name": ""},
+        "null name": {"host": "local", "name": None},
+        "non-string name": {"host": "local", "name": 42},
+    }
+    for why, payload in bodies.items():
+        # a non-object body carries no per-route extras -- it *is* the fault
+        body = payload if not isinstance(payload, dict) else {**payload, **extra}
+        r = client.post(path, json=body)
+        assert (r.status_code, r.json()) == (400, {"error": "invalid target"}), \
+            f"{path} / {why}: {r.status_code} {r.json()}"
+
+
+@pytest.mark.parametrize("path,extra", _MUTATING_ROUTES)
+def test_mutating_routes_reject_a_host_off_the_allowlist(monkeypatch, tmp_path, path, extra):
+    """An unchecked alias reaches ssh as a positional argument, where
+    `-oProxyCommand=...` would be parsed as an option (invariant #3), so every
+    route that names a session runs the ssh-config allowlist before touching it."""
+    client = _gate_world(monkeypatch, tmp_path)
+    r = client.post(path, json={"host": "evil-host", "name": "cc-example-1", **extra})
+    assert (r.status_code, r.json()) == (400, {"error": "invalid target"}), path
+
+
+@pytest.mark.parametrize("path,extra", _MUTATING_ROUTES)
+def test_target_refuses_another_users_session(monkeypatch, tmp_path, path, extra):
+    """The name is guessable even though the list is filtered, so each mutation
+    checks ownership too (item 8) -- live session or saved profile."""
+    client = _gate_world(monkeypatch, tmp_path)
+    r = client.post(path, json={"host": "local", "name": "cc-alice", **extra})
+    assert (r.status_code, r.json()) == (403, {"error": "not your session"}), path
+
+
+@pytest.mark.parametrize("path,extra", _MUTATING_ROUTES)
+def test_the_gate_passes_an_ordinary_request(monkeypatch, tmp_path, path, extra):
+    """The other half of the guard: a configured alias, a real name and an owner
+    must not be rejected -- and each handler still reads its own extra fields off
+    the body the gate hands back."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "host-a"})
+    sent = []
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: sent.append(argv) or True)
+    monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: True)
+    monkeypatch.setattr("serai.main.sessions.get_owner", lambda h, n: "alice")
+    _as_user(monkeypatch, "alice", admin=True)
+    r = TestClient(app).post(path, json={"host": "host-a", "name": "cc-example-1", **extra})
+    assert r.status_code == 200, f"{path}: {r.status_code} {r.json()}"
+
+
+@pytest.mark.parametrize("path,extra", _MUTATING_ROUTES)
+def test_a_name_with_nothing_behind_it_is_a_create(monkeypatch, tmp_path, path, extra):
+    """_may_touch lets an unknown name through (it is a create, which ws_attach
+    then claims), so the gate must not invent an owner check where there is none."""
+    client = _gate_world(monkeypatch, tmp_path)
+    monkeypatch.setattr("serai.main.sessions.session_exists", lambda h, n: False)
+    monkeypatch.setattr("serai.main.sessions.run_send", lambda argv: True)
+    r = client.post(path, json={"host": "local", "name": "cc-newcomer", **extra})
+    assert r.status_code == 200, f"{path}: {r.status_code} {r.json()}"

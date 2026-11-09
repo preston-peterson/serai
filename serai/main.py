@@ -265,6 +265,38 @@ async def _may_touch(sess: dict | None, host: str, name: str) -> bool:
     return True
 
 
+async def _target(request: Request) -> tuple[dict, str, str] | JSONResponse:
+    """The body → host allowlist → owner gate shared by every mutating session route.
+
+    Returns ``(body, host, name)`` on success — the body stays the caller's, so it
+    can read its own extra fields off it — or the error response to return:
+
+    - 400 ``invalid target``: a body that isn't a JSON object, a name that isn't a
+      non-empty string, or a host off the ssh-config allowlist. The host check is a
+      hard guard for invariant #3: an unchecked alias reaches ssh as a positional
+      argument, where `-oProxyCommand=...` would be parsed as an option.
+    - 403 ``not your session``: the named session (live *or* saved profile)
+      belongs to someone else (item 8 — the list is filtered, but a name is
+      guessable, so every mutation checks too).
+
+    Not a FastAPI dependency: these handlers read the body themselves for their
+    other fields, and a dependency would have to read it first anyway.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid target"}, status_code=400)
+    host = body.get("host", "local")
+    name = body.get("name")
+    if host not in _known_hosts() or not isinstance(name, str) or not name:
+        return JSONResponse({"error": "invalid target"}, status_code=400)
+    if not await _may_touch(_session(request), host, name):
+        return JSONResponse({"error": "not your session"}, status_code=403)
+    return body, host, name
+
+
 @app.get("/api/auth/status")
 async def api_auth_status(request: Request) -> JSONResponse:
     """Whether auth is on, configured, and the caller's session -- the SPA polls
@@ -809,15 +841,12 @@ async def api_broadcast(request: Request) -> JSONResponse:
 async def api_rename(request: Request) -> JSONResponse:
     """Rename a session. Body: {host, name, kind, label}. The new tmux name is
     built from kind+label so the cc-/shell- prefix is preserved (invariant #5)."""
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
     kind = body.get("kind", "shell")
     label = body.get("label") or ""
-    if host not in _known_hosts() or not name:
-        return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
     new_name = sessions.session_name(kind, label)
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.rename_argv(host, name, new_name))
@@ -837,13 +866,10 @@ async def api_kill(request: Request) -> JSONResponse:
     next kill drops the profile as usual. ``kept`` tells the client which
     happened so it can say so honestly.
     """
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
-    if host not in _known_hosts() or not name:
-        return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    _, host, name = t
     loop = asyncio.get_event_loop()
     rec = await loop.run_in_executor(_pool, store.get, host, name)
     kept = bool(rec and rec.get("favorite"))
@@ -865,13 +891,10 @@ async def api_restart(request: Request) -> JSONResponse:
     record the client needs to recreate the session from. The client attaches
     straight afterwards, which is what brings the session back.
     """
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
-    if host not in _known_hosts() or not name:
-        return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    _, host, name = t
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send, sessions.kill_argv(host, name))
     sessions.clear_cache(host)
@@ -887,13 +910,10 @@ async def api_args(request: Request) -> JSONResponse:
     Takes effect on the session's *next* create, exactly like a start dir, so the
     caller normally follows with /api/sessions/restart.
     """
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
-    if host not in _known_hosts() or not name:
-        return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
     try:
         clean = sessions.clean_args(body.get("args") or "")
     except ValueError as exc:
@@ -912,14 +932,13 @@ async def api_args(request: Request) -> JSONResponse:
 async def api_tags(request: Request) -> JSONResponse:
     """Set a session's tags (stored as the @serai_tags tmux user option).
     Body: {host, name, tags: [...]}. Tags are sanitized server-side."""
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
     tags = body.get("tags")
-    if host not in _known_hosts() or not name or not isinstance(tags, list):
+    if not isinstance(tags, list):
         return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
     clean = sessions.clean_tags(tags)
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(_pool, sessions.run_send,
@@ -938,13 +957,10 @@ async def api_favorite(request: Request) -> JSONResponse:
     tmux option to set. Owner-gated like every other per-session mutation, so a
     guessed name can't favorite or unfavorite someone else's session. A no-op on
     a name with no profile yet (the create path re-applies once it exists)."""
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
-    if host not in _known_hosts() or not name:
-        return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
     favorite = bool(body.get("favorite"))
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(_pool, store.set_favorite, host, name, favorite)
@@ -1011,13 +1027,10 @@ async def api_dir(request: Request) -> JSONResponse:
     pane opens for the session and where a post-reboot restore starts it -- it
     does not move a shell that is already running.
     """
-    body = await request.json()
-    host = body.get("host", "local")
-    name = body.get("name") or ""
-    if host not in _known_hosts() or not name:
-        return JSONResponse({"error": "invalid target"}, status_code=400)
-    if not await _may_touch(_session(request), host, name):
-        return JSONResponse({"error": "not your session"}, status_code=403)
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
     try:
         path = sessions.clean_dir(body.get("path") or "")
     except ValueError as e:
