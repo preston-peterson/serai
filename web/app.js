@@ -17,6 +17,7 @@ import * as favorites from "./features/favorites.js";
 import * as topbar from "./views/topbar.js";
 import * as rail from "./views/rail.js";
 import * as panes from "./views/panes.js";
+import * as phone from "./mobile/phone.js";
 
 const POLL_MS = 5000;
 const SAVED_EVERY = 3;          // saved profiles every third poll (and on demand)
@@ -64,6 +65,7 @@ async function boot() {
   panes.mount(document.getElementById("panes"));
   files.mount(document.getElementById("drawer"));
   board.mount(document.getElementById("board"));
+  phone.mount();                             // the phone arrangement (mockup 08), when narrow
   document.getElementById("app").hidden = false;
   await poll({ saved: true });
 }

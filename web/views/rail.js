@@ -132,7 +132,7 @@ function updateRow(el, s) {
   el.setAttribute("aria-label", `${s.label || s.name}, ${store.STATE_LABEL[s.state] || s.state}`);
 }
 
-function isFavorite(s) {
+export function isFavorite(s) {
   return (store.get().saved || []).some((r) => r.host === s.host && r.name === s.name && r.favorite);
 }
 
@@ -161,7 +161,7 @@ export function rowMenu(s, at, rowEl) {
   ].filter(Boolean), { onClose: () => rowEl && rowEl.classList.remove("menu-open") });
 }
 
-async function setFavorite(s, favorite) {
+export async function setFavorite(s, favorite) {
   try {
     await post("/api/favorite", { host: s.host, name: s.name, favorite });
     toast(favorite ? `${s.label || s.name} added to favorites` : `${s.label || s.name} removed from favorites`);
@@ -171,7 +171,7 @@ async function setFavorite(s, favorite) {
   }
 }
 
-async function relaunch(s) {
+export async function relaunch(s) {
   try {
     const r = await post("/api/sessions/relaunch", { host: s.host, name: s.name });
     toast(`started: ${r.command}`);
@@ -181,7 +181,7 @@ async function relaunch(s) {
   }
 }
 
-async function closeSession(s) {
+export async function closeSession(s) {
   const fav = isFavorite(s);
   const ok = await confirm({
     title: `Close ${s.label || s.name}?`,

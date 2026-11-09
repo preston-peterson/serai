@@ -49,7 +49,7 @@ function renderTag() {
   fill(tagBtn, h("span.ico", "◇"), tag || "all tags", h("span.n", String(n)), " ▾");
 }
 
-function tagMenu(anchor) {
+export function tagMenu(anchor) {
   const cur = store.get().tag;
   const pick = (t) => { store.set({ tag: t }); remember("tag", t); };
   openMenu(anchor, [
@@ -69,7 +69,7 @@ function renderAvatar() {
 const accountHooks = [];
 export function addAccountItem(item) { accountHooks.push(item); }
 
-function accountMenu(anchor) {
+export function accountMenu(anchor) {
   const a = store.get().auth || {};
   openMenu(anchor, [
     { hint: `signed in as ${a.user || "?"}${a.admin ? " · admin" : ""}` },

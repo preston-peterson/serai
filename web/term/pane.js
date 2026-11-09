@@ -9,6 +9,7 @@ import * as store from "../core/state.js";
 import { prefs } from "../core/prefs.js";
 import { TERM_THEMES } from "./themes.js";
 import { installClipboard, osc52Provider } from "./clipboard.js";
+import { installTouchScroll } from "./touch.js";
 
 const PING_MS = 20000;          // same cadence as the server's keepalive
 const STABLE_MS = 5000;         // a socket that stays up this long resets backoff
@@ -66,6 +67,7 @@ export class Pane {
     this.term.open(this.host);
     this.clip = installClipboard(this.term, { send: (b) => this.send(b), prefs });
     swallowQueries(this.term);
+    installTouchScroll(this.term);
 
     this.term.onData((d) => this.send(enc.encode(d)));
     this.term.onBinary((d) => {

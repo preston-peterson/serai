@@ -276,3 +276,73 @@ button.switch{border:0;padding:0}
 .keys{display:flex;gap:14px;padding:9px 16px;border-top:1px solid var(--border);background:var(--surface);color:var(--text-faint);font-size:.74rem}
 .board .strip .n { color: var(--text-faint); font-family: var(--mono); font-size: .74rem; }
 .dialog:focus { outline: none; }
+
+/* ---------- phone (approved mockup 08) ---------- */
+/* One list, a full-screen terminal with a key bar, sheets. #phone is sized to
+   the visible viewport by phone.js, so the soft keyboard never covers it. */
+#phone { position: fixed; left: 0; right: 0; top: 0; height: 100dvh; display: flex; flex-direction: column;
+  background: var(--bg); padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); z-index: 10; }
+body.phone #topbar, body.phone .layout, body.phone #board { display: none !important; }
+body.phone .input, body.phone .select, body.phone input, body.phone textarea { font-size: 16px; }  /* no zoom on focus */
+body.phone .toasts { bottom: 76px; left: 12px; right: 12px; align-items: stretch; }
+.p-list, .p-term { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.ptop { display: flex; align-items: center; gap: 10px; padding: 8px 12px 10px; }
+.ptop .brand { font-size: 1.15rem; }
+.ptop .btn { padding: 8px 10px; font-size: .9rem; }
+.ptop .avatar { width: 32px; height: 32px; }
+.plist { flex: 1; overflow: auto; padding: 0 10px 140px; -webkit-overflow-scrolling: touch; }
+.psec { display: flex; align-items: center; gap: 8px; padding: 10px 8px 6px; color: var(--text-faint); font: 600 .68rem var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.psec .count { margin-left: auto; font-weight: 400; }
+.pcard { display: block; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; overflow: hidden; cursor: pointer; }
+.pcard.blocked { border-color: #5a4418; } .pcard.working { border-color: #27452f; }
+.pcard .h { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font: .9rem var(--mono); }
+.pcard .h .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard .h .fav { color: var(--st-blocked); font-size: .8rem; }
+.pcard .h .age { color: var(--text-faint); font-size: .74rem; }
+.pcard .h .more { color: var(--text-faint); padding: 2px 8px; font-size: 1.1rem; min-width: 32px; min-height: 32px; }
+.pcard .tail { padding: 0 12px 8px; font: .76rem/1.4 var(--mono); color: var(--text-dim); white-space: pre; overflow: hidden; }
+.pcard .state { display: flex; gap: 6px; align-items: center; padding: 0 12px 10px; font-size: .74rem; color: var(--text-faint); }
+.pcard .state b { font-weight: 600; }
+.pcard.blocked .state b { color: var(--st-blocked); } .pcard.working .state b { color: var(--st-working); }
+.pcard.stuck .state b { color: var(--st-stuck); } .pcard.done .state b { color: var(--st-done); }
+.fab { position: absolute; right: 16px; bottom: 84px; width: 54px; height: 54px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-size: 1.6rem; box-shadow: 0 10px 24px -8px #000; }
+.pnav { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; padding: 8px 0 calc(10px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--border); }
+.pnav button { display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--text-faint); font-size: .66rem; min-width: 64px; }
+.pnav button i { font-style: normal; font-size: 1.15rem; } .pnav button.on { color: var(--accent); }
+.ahead { display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px; }
+.ahead .back { padding: 8px 12px; font-size: 1.3rem; color: var(--text-dim); }
+.ahead .title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font: .9rem var(--mono); }
+.ahead .title .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ahead .btn { padding: 7px 12px; }
+.qswitch { display: flex; gap: 6px; padding: 0 10px 8px; overflow-x: auto; scrollbar-width: none; }
+.qswitch button { font: .74rem var(--mono); color: var(--text-faint); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.qswitch button.on { color: var(--text); border-color: var(--border-st); background: var(--surface-2); }
+.p-termhost { flex: 1; min-height: 0; display: flex; }
+.p-termhost .panes { flex: 1; }
+body.phone .pane-head, body.phone .panes .divider { display: none; }
+body.phone .pane:not(.focused) { display: none; }
+body.phone .term { padding: 4px 4px 2px 6px; }
+.keybar { display: flex; gap: 2px; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; flex: none; }
+.keybar .k { flex: none; min-width: 32px; height: 40px; padding: 0 4px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--border-st); background: var(--surface-2); color: var(--text); font: .86rem var(--mono); touch-action: manipulation; }
+.keybar .k.acc { color: var(--accent); border-color: #2b4d6e; }
+.keybar .k.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.keybar .k.wide { min-width: 44px; font-size: .78rem; }   /* nine keys fit a 390px phone */
+.keybar .k.danger { color: var(--danger); }
+.keybar .sep { width: 1px; background: var(--border); margin: 4px 2px; flex: none; }
+.selbanner { display: flex; align-items: center; gap: 10px; padding: 7px 12px; background: var(--accent-bg); color: var(--text); font-size: .8rem; border-bottom: 1px solid var(--border-st); }
+.selbanner .btn { margin-left: auto; }
+.selover { position: absolute; inset: 0; margin: 0; padding: 4px 4px 2px 6px; overflow: auto; background: var(--term-bg); color: #d0d6de;
+  font: 13px/1.35 var(--mono); white-space: pre; -webkit-user-select: text; user-select: text; z-index: 5; }
+.sheet-scrim { position: fixed; inset: 0; z-index: 120; background: rgba(4,6,9,.55); display: flex; align-items: flex-end; }
+.sheet { width: 100%; max-height: 70%; background: var(--surface); border-radius: 18px 18px 0 0; border-top: 1px solid var(--border-st); box-shadow: 0 -20px 40px -20px #000; display: flex; flex-direction: column; overflow: auto; padding-bottom: env(safe-area-inset-bottom); }
+.sheet .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--border-st); margin: 8px auto 6px; flex: none; }
+.sheet .shead { display: flex; align-items: center; gap: 8px; padding: 4px 14px 10px; font: .84rem var(--mono); color: var(--text-dim); flex-wrap: wrap; }
+.sheet .shead b { color: var(--text); }
+.sheet .shead .btn { margin-left: auto; }
+.sheet .frow { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px; border-top: 1px solid var(--border); font: .9rem var(--mono); color: var(--text); text-align: left; }
+.sheet .frow .ico { width: 18px; text-align: center; color: var(--text-faint); }
+.sheet .frow .meta { margin-left: auto; color: var(--text-faint); font-size: .74rem; }
+.sheet .frow.danger { color: var(--danger); }
+.sheet .frow.dim { color: var(--text-faint); }
+.sheet .sfiles-head { padding: 12px 16px 4px; border-top: 1px solid var(--border-st); color: var(--text-faint); font: 600 .68rem var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+
