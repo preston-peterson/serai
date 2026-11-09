@@ -9,13 +9,17 @@ class CDP:
     @classmethod
     async def connect(cls, port):
         import websockets
-        for _ in range(60):
+        # A cold Chromium on a busy CI runner can take well over 15s to expose
+        # its first page, so wait generously -- and say so if it never does.
+        page, deadline = None, asyncio.get_running_loop().time() + 45
+        while page is None and asyncio.get_running_loop().time() < deadline:
             try:
-                tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json"))
+                tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2))
                 page = next(t for t in tabs if t["type"] == "page")
-                break
             except Exception:
                 await asyncio.sleep(0.25)
+        if page is None:
+            raise RuntimeError(f"Chromium exposed no page on debug port {port} within 45s (see browser.log)")
         ws = await websockets.connect(page["webSocketDebuggerUrl"], max_size=50_000_000)
         c = cls(ws); c.reader = asyncio.create_task(c._read()); return c
     async def _read(self):
