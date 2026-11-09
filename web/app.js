@@ -11,6 +11,8 @@ import * as account from "./features/account.js";
 import * as board from "./features/board.js";
 import * as profile from "./features/profile.js";
 import * as settings from "./features/settings.js";
+import * as palette from "./features/palette.js";
+import * as favorites from "./features/favorites.js";
 import * as topbar from "./views/topbar.js";
 import * as rail from "./views/rail.js";
 import * as panes from "./views/panes.js";
@@ -56,6 +58,8 @@ async function boot() {
   account.mount();                          // the avatar menu's "Account…" entry
   settings.mount();                          // the ⚙ button, the saved density, the update dot
   profile.mount();                           // adds its own top-bar button and rail hook
+  palette.mount();                           // the ⌕ pill, Ctrl+K, the double-Shift
+  favorites.mount();                         // the ★ button and its panel
   panes.mount(document.getElementById("panes"));
   board.mount(document.getElementById("board"));
   document.getElementById("app").hidden = false;

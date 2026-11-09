@@ -232,3 +232,21 @@ button.switch{border:0;padding:0}
 .card .cf{display:flex;padding:6px 10px;font:.74rem var(--mono);color:var(--text-faint)}.card .cf b{font-weight:600}.card .cf .age{margin-left:auto}
 .board .strip .count{margin-left:auto;color:var(--text-faint);font:.74rem var(--mono)}
 .board .empty{display:grid;place-items:center;min-height:240px;color:var(--text-faint);font:.86rem var(--mono)}
+/* favorites + palette */
+.favs .grip{color:var(--text-faint);cursor:grab;width:24px;font-family:var(--mono)}
+.favs .t-name{display:flex;gap:8px;align-items:center;color:var(--text);font-family:var(--mono)}
+.favs .up{color:var(--st-working);font-family:var(--mono);font-size:.78rem}
+.favs .dn{color:var(--text-faint);font-family:var(--mono);font-size:.78rem}
+.favs .acts{display:flex;gap:6px;justify-content:flex-end;align-items:center}
+.dialog.favs{width:min(900px,94vw)}
+.empty{text-align:center;padding:50px 20px 60px}.empty .big{font-size:4rem;color:var(--text-faint);opacity:.5;line-height:1}
+.empty h3{margin:10px 0 4px;font-weight:600}.empty p{margin:0;color:var(--text-faint);font-size:.84rem}
+.dialog.palette{width:min(560px,94vw)}
+.pin{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.pin input{flex:1;border:0;background:none;color:var(--text);outline:none;font:1.05rem var(--mono)}
+.res{padding:6px;max-height:50vh;overflow:auto}
+.pr{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:var(--r);font:.84rem var(--mono);cursor:pointer}
+.pr.first,.pr:hover{background:var(--raised)}.pr .name{color:var(--text)}.pr .name b{color:var(--accent)}
+.pr .host{color:var(--text-faint);font-size:.74rem}.pr .hint{margin-left:auto;color:var(--text-faint);font-size:.74rem}
+.pr .chip{padding:0 6px;font-size:.66rem}
+.keys{display:flex;gap:14px;padding:9px 16px;border-top:1px solid var(--border);background:var(--surface);color:var(--text-faint);font-size:.74rem}
