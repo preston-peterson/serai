@@ -426,6 +426,34 @@ def _loop_gate(kind: str, marker_text: str, content: list[str]) -> bool:
 # Keyed on host::name like _session_cache, and just as deliberately never persisted.
 _loop_memory: dict[str, tuple[str, int]] = {}
 
+# Hosts are discovered concurrently (main.py's thread pool runs
+# _list_sessions_uncached per host), so this map is shared state. One lock, held
+# only around the dict operations -- never across a tmux call. `_cache_lock`
+# below is the same pattern.
+_loop_memory_lock = threading.Lock()
+
+# The key separator, same as Session.id. A tmux session name cannot hold ':',
+# so a stored key always splits back into (host, name) exactly.
+_LOOP_SEP = "::"
+
+
+def _forget_loop_memory(host: str, live_names: set[str]) -> None:
+    """Forget this host's poll memory for sessions no longer in its listing.
+
+    Without this the map only ever grows -- one entry per session that has ever
+    been seen, unbounded over the life of the service. A vanished session's entry
+    has to go anyway: if a name is later reused, its stuck count must start from
+    zero rather than resume where the old session left off.
+
+    Each host's poll prunes only its own `host::` keys, so polls running
+    concurrently for other hosts are untouched."""
+    prefix = f"{host}{_LOOP_SEP}"
+    with _loop_memory_lock:
+        stale = [k for k in _loop_memory if k.startswith(prefix)
+                 and k[len(prefix):] not in live_names]
+        for key in stale:
+            del _loop_memory[key]
+
 
 def _stuck_polls(kind: str, key: str, content: list[str], marker_text: str,
                  parked_shell: bool = False) -> bool:
@@ -435,12 +463,16 @@ def _stuck_polls(kind: str, key: str, content: list[str], marker_text: str,
     pane's foreground is a plain shell -- an agent that exited to its prompt (see
     _EXIT_SHELL) is parked, not looping, so it resets rather than accumulates."""
     if kind not in AGENT_KINDS or parked_shell or not _loop_gate(kind, marker_text, content):
-        _loop_memory.pop(key, None)
+        with _loop_memory_lock:
+            _loop_memory.pop(key, None)
         return False
     fp = "\n".join(content)
-    prev_fp, count = _loop_memory.get(key, (None, 0))
-    count = count + 1 if prev_fp == fp else 1
-    _loop_memory[key] = (fp, count)
+    # Read-modify-write, so the pair has to be taken under the lock together:
+    # two polls racing here would both see the same previous count.
+    with _loop_memory_lock:
+        prev_fp, count = _loop_memory.get(key, (None, 0))
+        count = count + 1 if prev_fp == fp else 1
+        _loop_memory[key] = (fp, count)
     return count >= _STUCK_POLLS
 
 
@@ -503,6 +535,10 @@ _session_cache: dict[str, tuple[float, list[Session]]] = {}
 def _list_sessions_uncached(host: str) -> list[Session]:
     out = _run(_tmux_argv(host, f"tmux list-sessions -F '{_FMT}'"))
     if not out:
+        # An empty listing and a failed one (host unreachable, tmux not running)
+        # look the same here, so keep the loop memory: a transient ssh error must
+        # not reset a looping agent's stuck count. The next successful listing
+        # prunes whatever really is gone.
         return []
 
     sessions: list[Session] = []
@@ -542,7 +578,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
         content = _content_lines(lines)
         dupe_lines = kind in AGENT_KINDS and not parked_shell and \
             _trailing_dupes(content) >= _STUCK_DUPES
-        stuck_polls = _stuck_polls(kind, f"{host}::{name}", content, marker_text,
+        stuck_polls = _stuck_polls(kind, f"{host}{_LOOP_SEP}{name}", content, marker_text,
                                    parked_shell)
         planned_leftover = kind in AGENT_KINDS and not parked_shell and bool(content) and \
             _planned_leftover(content[-1])
@@ -554,6 +590,9 @@ def _list_sessions_uncached(host: str) -> list[Session]:
                     args=extra_args, owner=owner, tail=_preview(lines), alt=alt,
                     age=(round(secs) if secs is not None else -1.0))
         )
+    # Whatever this poll did not see is gone from this host: forget it, so the map
+    # tracks what is live instead of everything that has ever been polled.
+    _forget_loop_memory(host, {s.name for s in sessions})
     return sessions
 
 

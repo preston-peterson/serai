@@ -378,6 +378,75 @@ def test_stuck_poll_memory_counts_and_resets():
     assert sessions._stuck_polls("shell", key, tail, "") is False
 
 
+def _fake_discovery(monkeypatch, listings: dict, pane: str):
+    """Serve `tmux list-sessions` / `capture-pane` from `listings` (host -> raw
+    listing), so a test can make a session vanish by rewriting its host's row."""
+    def fake_run(argv, timeout=6):
+        joined = " ".join(argv)
+        if "list-sessions" in joined:
+            return next(v for h, v in listings.items() if h in argv)
+        if "capture-pane" in joined:   # remote: the tmux call is one ssh-side string
+            return pane
+        return ""
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    return listings
+
+
+def test_loop_memory_forgets_a_session_that_disappeared(monkeypatch):
+    # The map must track what is live, not everything ever polled: a poll prunes
+    # its own host's vanished keys and leaves other hosts' entries alone.
+    now = int(time.time())
+    listing = _row("cc-example-1", 0, now - 60, "", "claude", 0, "", "", "", "/home/u/app")
+    other = _row("cc-example-2", 0, now - 60, "", "claude", 0, "", "", "", "/home/u/app")
+    listings = _fake_discovery(monkeypatch, {"host-a": listing, "host-b": other},
+                               # a live busy turn, so signal 2 is admitted at all
+                               "rebuilding the css now.\nesc to interrupt\n")
+    sessions._loop_memory.clear()
+
+    sessions._list_sessions_uncached("host-a")
+    sessions._list_sessions_uncached("host-b")
+    assert "host-a::cc-example-1" in sessions._loop_memory
+    assert "host-b::cc-example-2" in sessions._loop_memory
+
+    # An empty listing is indistinguishable from a failed one (ssh down, tmux not
+    # running), so it must NOT prune: a transient error can't reset stuck counts.
+    listings["host-a"] = ""
+    assert sessions._list_sessions_uncached("host-a") == []
+    assert "host-a::cc-example-1" in sessions._loop_memory
+
+    # A successful listing that no longer has cc-example-1 does prune it, and
+    # leaves the other host's entry alone.
+    listings["host-a"] = _row("cc-example-3", 0, now - 60, "", "claude", 0, "", "", "", "/home/u/app")
+    assert [x.name for x in sessions._list_sessions_uncached("host-a")] == ["cc-example-3"]
+    assert "host-a::cc-example-1" not in sessions._loop_memory
+    assert "host-b::cc-example-2" in sessions._loop_memory   # this poll isn't its host
+    sessions._loop_memory.clear()
+
+
+def test_stuck_count_restarts_when_a_session_comes_back(monkeypatch):
+    # A vanished session's count must not carry over: a name reused (or restarted)
+    # starts from zero, so a fresh agent is never born `stuck`.
+    now = int(time.time())
+    row = _row("oc-example-1", 0, now - 60, "", "opencode", 0, "", "", "", "/home/u/app")
+    listings = _fake_discovery(monkeypatch, {"host-a": row}, "still reworking the parser.\n")
+    sessions._loop_memory.clear()
+    key = "host-a::oc-example-1"
+
+    states = [sessions._list_sessions_uncached("host-a")[0].state for _ in range(3)]
+    assert states == ["done", "done", "stuck"]
+    assert sessions._loop_memory[key][1] == 3
+
+    # gone from a successful listing (another session is live on the host)
+    listings["host-a"] = _row("oc-example-2", 0, now - 60, "", "opencode", 0, "", "", "", "/home/u/app")
+    sessions._list_sessions_uncached("host-a")
+    assert key not in sessions._loop_memory
+
+    listings["host-a"] = row
+    again = [sessions._list_sessions_uncached("host-a")[0].state for _ in range(3)]
+    assert again == ["done", "done", "stuck"]   # the run had to start over
+    sessions._loop_memory.clear()
+
+
 def test_planned_leftover_predicate():
     pl = sessions._planned_leftover
     # The invented fixture the job names: a narration that never became a tool call.
