@@ -52,8 +52,11 @@ kbd { font-size: .72rem; color: var(--text-faint); border: 1px solid var(--borde
 
 /* ---------- layout ---------- */
 .layout { display: flex; flex: 1; min-height: 0; }
-.rail { width: 300px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
+.rail { position: relative; width: 300px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
 .rail-scroll { flex: 1; overflow: auto; padding: 8px 6px; }
+.rail-grip { position: absolute; top: 0; right: -4px; width: 7px; height: 100%; cursor: col-resize; z-index: 5; }
+.rail-grip:hover, body.resizing .rail-grip { background: var(--accent); opacity: .5; }
+body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
 .rail-foot { padding: 6px 12px; border-top: 1px solid var(--border); color: var(--text-faint); font: .72rem var(--mono); display: flex; gap: 8px; align-items: center; }
 .group { margin-bottom: 6px; }
 .group-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: var(--text-faint); font: 600 .68rem var(--mono); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }

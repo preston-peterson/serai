@@ -8,7 +8,7 @@ import { post, keyOf } from "../core/api.js";
 import { confirm, toast } from "../core/dialog.js";
 import { openMenu } from "../core/menu.js";
 import * as store from "../core/state.js";
-import { remember, prefs } from "../core/prefs.js";
+import { remember, prefs, setPrefs, DEFAULTS } from "../core/prefs.js";
 import { kindInfo } from "../term/pane.js";
 import * as panes from "./panes.js";
 
@@ -19,10 +19,47 @@ let collapsed = new Set(remember("collapsed") || []);
 
 export function setHook(name, fn) { hooks[name] = fn; }
 
+const MIN_W = 180;
+
+const clampWidth = (w) =>
+  Math.round(Math.max(MIN_W, Math.min(Number(w) || DEFAULTS.railWidth, window.innerWidth * 0.6)));
+
+/** The rail's right edge: drag to resize, double-click for the default width.
+ *  The width is applied live and saved once, on release (a preference, so it
+ *  follows you between devices). The panes refit through their own observers. */
+function makeGrip(railEl) {
+  const grip = h("div.rail-grip", { role: "separator", "aria-orientation": "vertical",
+    title: "Drag to resize (double-click to reset)" });
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const left = railEl.getBoundingClientRect().left;
+    document.body.classList.add("resizing");
+    const move = (ev) => { railEl.style.width = `${clampWidth(ev.clientX - left)}px`; };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      document.body.classList.remove("resizing");
+      setPrefs({ railWidth: clampWidth(railEl.getBoundingClientRect().width) });
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  });
+  grip.addEventListener("dblclick", () => {
+    railEl.style.width = `${DEFAULTS.railWidth}px`;
+    setPrefs({ railWidth: DEFAULTS.railWidth });
+  });
+  return grip;
+}
+
 export function mount(railEl) {
   scroll = h("div.rail-scroll", { role: "tree", "aria-label": "Sessions" });
   foot = h("div.rail-foot");
-  railEl.replaceChildren(scroll, foot);
+  railEl.replaceChildren(scroll, foot, makeGrip(railEl));
+  railEl.style.width = `${clampWidth(prefs().railWidth)}px`;
   scroll.addEventListener("keydown", onKey);
   store.subscribe(["sessions", "saved", "tag", "focusedKey", "kinds"], render);
   store.subscribe(["version", "connected"], renderFoot);
