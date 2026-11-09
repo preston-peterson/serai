@@ -203,3 +203,11 @@ button.avatar { padding: 0; cursor: pointer; }
 .tagsbox input{flex:1;min-width:80px;border:0;background:none;color:var(--text);outline:none;font:.82rem var(--mono)}
 .field .full,.field .note{grid-column:1/-1}
 .dialog.form{width:min(600px,94vw)}
+
+/* settings */
+.updot{width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block;margin-left:4px;vertical-align:top}
+.dialog-body .p{min-height:330px}
+.chip.owner{font-size:.66rem;padding:0 6px}
+body.dense-comfortable .row{padding:10px 8px}
+button.switch{border:0;padding:0}
+.note a{color:var(--accent)}

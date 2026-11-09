@@ -8,7 +8,7 @@ import { post, keyOf } from "../core/api.js";
 import { confirm, toast } from "../core/dialog.js";
 import { openMenu } from "../core/menu.js";
 import * as store from "../core/state.js";
-import { remember } from "../core/prefs.js";
+import { remember, prefs } from "../core/prefs.js";
 import { kindInfo } from "../term/pane.js";
 import * as panes from "./panes.js";
 
@@ -26,6 +26,11 @@ export function mount(railEl) {
   scroll.addEventListener("keydown", onKey);
   store.subscribe(["sessions", "saved", "tag", "focusedKey", "kinds"], render);
   store.subscribe(["version", "connected"], renderFoot);
+  // Owner chips are a preference, not server state: they appear/disappear with no
+  // poll to wait for. Gated on the key so dragging a splitter doesn't repaint.
+  window.addEventListener("serai:prefs", (e) => {
+    if (e.detail && "ownerChips" in e.detail) render();
+  });
   render();
   renderFoot();
 }
@@ -85,7 +90,8 @@ function toggleGroup(g) {
 
 function renderRow(s) {
   const el = h("div.row", { role: "treeitem", tabindex: "0" },
-    h("span.dot"), h("span.kind"), h("span.name"), h("span.host"), h("span.fav", "★"), h("span.age"),
+    h("span.dot"), h("span.kind"), h("span.name"), h("span.chip.owner"), h("span.host"),
+    h("span.fav", "★"), h("span.age"),
     h("button.more", { type: "button", title: "Session actions", "aria-label": "Session actions" }, "⋮"));
   el.addEventListener("click", (e) => {
     if (e.target.closest(".more")) return;
@@ -117,6 +123,9 @@ function updateRow(el, s) {
   const host = el.querySelector(".host");
   host.textContent = s.host === "local" ? "" : s.host;
   host.hidden = s.host === "local";
+  const owner = el.querySelector(".chip.owner");
+  owner.textContent = s.owner || "";
+  owner.hidden = !(prefs().ownerChips && st.auth && st.auth.admin && s.owner);
   el.querySelector(".fav").hidden = !isFavorite(s);
   el.querySelector(".age").textContent = s.state === "running" ? "now" : ago(s.age);
   el.classList.toggle("selected", st.focusedKey === `${s.host}\u001f${s.name}`);

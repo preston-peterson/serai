@@ -8,6 +8,7 @@ import * as store from "./core/state.js";
 import { isOpen as dialogOpen } from "./core/dialog.js";
 import { requireAuth } from "./features/login.js";
 import * as profile from "./features/profile.js";
+import * as settings from "./features/settings.js";
 import * as topbar from "./views/topbar.js";
 import * as rail from "./views/rail.js";
 import * as panes from "./views/panes.js";
@@ -50,6 +51,7 @@ async function boot() {
   try { store.set({ kinds: await get("/api/kinds") }); } catch { /* the rail falls back to shell chips */ }
   topbar.mount(document.getElementById("topbar"));
   rail.mount(document.getElementById("rail"));
+  settings.mount();                          // the ⚙ button, the saved density, the update dot
   profile.mount();                           // adds its own top-bar button and rail hook
   panes.mount(document.getElementById("panes"));
   document.getElementById("app").hidden = false;
