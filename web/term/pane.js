@@ -17,7 +17,9 @@ const enc = new TextEncoder();
 
 export function kindInfo(kind) {
   const k = (store.get().kinds || []).find((x) => x.kind === kind);
-  return k || { kind, agent: false, cmd: null, chip: "sh", glyph: "❯", resume: {} };
+  // Before /api/kinds has loaded (or for an unknown kind) it is a shell, with
+  // the shell prefix -- callers build session names from it.
+  return k || { kind, agent: false, cmd: null, prefix: "shell-", chip: "sh", glyph: "❯", resume: {} };
 }
 
 function termOptions() {
