@@ -1099,6 +1099,57 @@ def test_ssh_for_authenticates_via_agent_only_and_caches(monkeypatch):
     files._clients.clear()
 
 
+# --- file-route host allowlist ---------------------------------------------
+
+def _only_local_and_host_a(monkeypatch):
+    # Hermetic allowlist: 'local' plus one invented alias, same shape as
+    # _only_local_hosts but without touching the parser.
+    monkeypatch.setattr("serai.main._known_hosts", lambda: {"local", "host-a"})
+
+
+def test_file_routes_reject_hosts_off_the_allowlist(monkeypatch):
+    # /api/files, /api/file and /api/upload handed `host` straight to serai.files,
+    # whose _ssh_for connects to whatever string it is given -- the one gap in the
+    # ssh-config allowlist every other host-taking route enforces (#1/#3).
+    _only_local_and_host_a(monkeypatch)
+
+    def never(*a, **k):
+        raise AssertionError(f"serai.files reached for a disallowed host: {a} {k}")
+
+    monkeypatch.setattr(files, "list_dir", never)
+    monkeypatch.setattr(files, "read_file", never)
+    monkeypatch.setattr(files, "write_file", never)
+
+    client = TestClient(app)
+    r = client.get("/api/files", params={"host": "evil-host", "path": "~"})
+    assert (r.status_code, r.json()) == (400, {"error": "invalid target"})
+    r = client.get("/api/file", params={"host": "evil-host", "path": "/etc/hostname"})
+    assert (r.status_code, r.json()) == (400, {"error": "invalid target"})
+    r = client.post("/api/upload?host=evil-host&path=/tmp/x", files={"file": ("a.txt", b"x")})
+    assert (r.status_code, r.json()) == (400, {"error": "invalid target"})
+
+
+def test_file_routes_still_serve_allowlisted_hosts(monkeypatch):
+    _only_local_and_host_a(monkeypatch)
+    calls: list[tuple] = []
+    monkeypatch.setattr(files, "list_dir",
+                        lambda host, path: calls.append(("list_dir", host, path)) or [])
+    monkeypatch.setattr(files, "read_file",
+                        lambda host, path: calls.append(("read_file", host, path)) or b"hi")
+    monkeypatch.setattr(files, "write_file",
+                        lambda host, path, data: calls.append(("write_file", host, path, len(data))))
+
+    client = TestClient(app)
+    assert client.get("/api/files", params={"host": "local", "path": "~"}).status_code == 200
+    r = client.get("/api/file", params={"host": "host-a", "path": "/etc/hostname"})
+    assert (r.status_code, r.content) == (200, b"hi")
+    r = client.post("/api/upload?host=local&path=/tmp/x", files={"file": ("a.txt", b"payload")})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert calls == [("list_dir", "local", "~"),
+                     ("read_file", "host-a", "/etc/hostname"),
+                     ("write_file", "local", "/tmp/x", 7)]
+
+
 # --- fleet broadcast -------------------------------------------------------
 
 def test_send_keys_argv_local_and_remote():

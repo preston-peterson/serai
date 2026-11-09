@@ -700,6 +700,10 @@ async def api_sessions_restore(request: Request) -> JSONResponse:
 
 @app.get("/api/files")
 async def api_files(host: str = "local", path: str = "~") -> JSONResponse:
+    # Same allowlist as every other host-taking route: files._ssh_for connects to
+    # whatever string it is handed, so an unchecked alias is hostile input (#1/#3).
+    if host not in _known_hosts():
+        return JSONResponse({"error": "invalid target"}, status_code=400)
     loop = asyncio.get_event_loop()
     try:
         entries = await loop.run_in_executor(_pool, files.list_dir, host, path)
@@ -750,6 +754,8 @@ async def api_files_op(request: Request) -> JSONResponse:
 
 @app.get("/api/file")
 async def api_file(host: str = "local", path: str = "") -> Response:
+    if host not in _known_hosts():
+        return JSONResponse({"error": "invalid target"}, status_code=400)
     loop = asyncio.get_event_loop()
     data = await loop.run_in_executor(_pool, files.read_file, host, path)
     name = os.path.basename(path) or "download"
@@ -1025,6 +1031,8 @@ async def api_dir(request: Request) -> JSONResponse:
 
 @app.post("/api/upload")
 async def api_upload(host: str = "local", path: str = "", file: UploadFile = File(...)) -> JSONResponse:
+    if host not in _known_hosts():
+        return JSONResponse({"error": "invalid target"}, status_code=400)
     data = await file.read()
     loop = asyncio.get_event_loop()
     try:
