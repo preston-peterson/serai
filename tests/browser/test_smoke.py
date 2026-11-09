@@ -73,6 +73,7 @@ class Stack:
         return subprocess.run(["tmux", "-f", "/dev/null", *a], env=self.env, capture_output=True, text=True)
 
     def start(self, log_dir):
+        self.log_dir = log_dir
         self.procs.append(subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "serai.main:app", "--host", "127.0.0.1", "--port", str(self.port)],
             cwd=REPO, env=self.env, start_new_session=True,
@@ -91,6 +92,20 @@ class Stack:
             except Exception:
                 time.sleep(0.25)
         raise RuntimeError("serai did not start (see serai.log)")
+
+    def log_tails(self, lines=40) -> str:
+        """The end of serai's and the browser's logs. Printed at teardown, so a
+        failing test shows them (pytest only displays captured output on
+        failure) and nobody has to go and open files under /tmp."""
+        out = []
+        for name in ("serai.log", "browser.log"):
+            try:
+                with open(os.path.join(self.log_dir, name), errors="replace") as f:
+                    tail = f.readlines()[-lines:]
+            except (OSError, AttributeError):
+                continue
+            out.append(f"----- {name} (last {len(tail)} lines) -----\n" + "".join(tail))
+        return "\n".join(out)
 
     def stop(self):
         for p in self.procs:
@@ -119,6 +134,7 @@ def stack(tmp_path):
         s.start(str(tmp_path))
         yield s
     finally:
+        print(s.log_tails())
         s.stop()
 
 
