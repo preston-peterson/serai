@@ -8,6 +8,7 @@ import * as store from "./core/state.js";
 import { isOpen as dialogOpen } from "./core/dialog.js";
 import { requireAuth } from "./features/login.js";
 import * as account from "./features/account.js";
+import * as board from "./features/board.js";
 import * as profile from "./features/profile.js";
 import * as settings from "./features/settings.js";
 import * as topbar from "./views/topbar.js";
@@ -56,6 +57,7 @@ async function boot() {
   settings.mount();                          // the ⚙ button, the saved density, the update dot
   profile.mount();                           // adds its own top-bar button and rail hook
   panes.mount(document.getElementById("panes"));
+  board.mount(document.getElementById("board"));
   document.getElementById("app").hidden = false;
   await poll({ saved: true });
 }

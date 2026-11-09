@@ -216,3 +216,19 @@ button.switch{border:0;padding:0}
 .tab .badge{margin-left:6px;font:.66rem var(--mono);border:1px solid var(--border-st);border-radius:4px;padding:0 4px;color:var(--text-faint)}
 .addrow{display:flex;gap:8px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
 .addrow .input{width:auto;flex:1}
+
+/* board */
+.board{flex:1;min-height:0;display:flex}
+.board .wrap{padding:14px 16px;overflow:auto;flex:1}
+.board .strip{display:flex;gap:8px;margin-bottom:14px;align-items:center}
+.board .strip .btn.on,.topbar .btn.on{background:var(--accent-bg);border-color:var(--border-st);color:var(--text)}
+.board .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;max-width:1100px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden;display:flex;flex-direction:column;cursor:pointer}
+.card:hover{border-color:var(--border-st)}.card.blocked{border-color:#5a4418}
+.card .ch{display:flex;align-items:center;gap:8px;padding:8px 10px;font:.82rem var(--mono)}
+.card .ch .name{color:var(--text);font-weight:600}.card .ch .host{color:var(--text-faint);font-size:.72rem}.card .ch .fav{color:var(--st-blocked)}
+.card .ch .more{margin-left:auto;color:var(--text-faint);padding:0 6px;border-radius:4px;visibility:visible}
+.card .term{flex:none;height:96px;font:11.5px/1.35 var(--mono);color:#d0d6de;white-space:pre;background:var(--term-bg);padding:7px 10px;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.card .cf{display:flex;padding:6px 10px;font:.74rem var(--mono);color:var(--text-faint)}.card .cf b{font-weight:600}.card .cf .age{margin-left:auto}
+.board .strip .count{margin-left:auto;color:var(--text-faint);font:.74rem var(--mono)}
+.board .empty{display:grid;place-items:center;min-height:240px;color:var(--text-faint);font:.86rem var(--mono)}
