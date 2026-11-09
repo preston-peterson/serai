@@ -9,6 +9,7 @@ import { isOpen as dialogOpen } from "./core/dialog.js";
 import { requireAuth } from "./features/login.js";
 import * as account from "./features/account.js";
 import * as board from "./features/board.js";
+import * as files from "./features/files.js";
 import * as profile from "./features/profile.js";
 import * as settings from "./features/settings.js";
 import * as palette from "./features/palette.js";
@@ -61,6 +62,7 @@ async function boot() {
   palette.mount();                           // the ⌕ pill, Ctrl+K, the double-Shift
   favorites.mount();                         // the ★ button and its panel
   panes.mount(document.getElementById("panes"));
+  files.mount(document.getElementById("drawer"));
   board.mount(document.getElementById("board"));
   document.getElementById("app").hidden = false;
   await poll({ saved: true });
