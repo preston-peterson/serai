@@ -32,6 +32,18 @@ from serai.main import app
 requires_tmux = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
 
 
+def _row(*fields: str) -> str:
+    """One `tmux list-sessions -F` line (newline-terminated), joined with the real
+    listing separator.
+
+    The field order is `_FMT`'s: name, attached, activity, tags,
+    pane_current_command, alternate_on, @serai_args, @serai_owner, @serai_dir,
+    and the live path -- which stays LAST because it is the only field allowed to
+    hold anything printable, `::` included.
+    """
+    return sessions._SEP.join(str(f) for f in fields) + "\n"
+
+
 @pytest.fixture(autouse=True)
 def _auth_off(monkeypatch):
     """Most tests exercise functionality, not auth, so keep the gate open by
@@ -355,8 +367,8 @@ def test_stuck_from_repeated_line_via_listing(monkeypatch):
     # not. Uses invented fixture names only.
     now = int(time.time())
     listing = (
-        f"oc-example-1::0::{now - 60}::::opencode::0::::::::/home/u/app\n"
-        f"shell-demo-1::0::{now - 99999}::::bash::0::::::::/home/u/app\n"
+        _row("oc-example-1", 0, now - 60, "", "opencode", 0, "", "", "", "/home/u/app")
+        + _row("shell-demo-1", 0, now - 99999, "", "bash", 0, "", "", "", "/home/u/app")
     )
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
@@ -381,8 +393,8 @@ def test_stuck_from_planned_leftover_via_listing(monkeypatch):
     # finished reply stays done, and a shell never reads stuck.
     now = int(time.time())
     listing = (
-        f"cc-example-1::0::{now - 60}::::claude::0::::::::/home/u/app\n"
-        f"shell-demo-2::0::{now - 99999}::::bash::0::::::::/home/u/app\n"
+        _row("cc-example-1", 0, now - 60, "", "claude", 0, "", "", "", "/home/u/app")
+        + _row("shell-demo-2", 0, now - 99999, "", "bash", 0, "", "", "", "/home/u/app")
     )
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
@@ -542,7 +554,7 @@ def test_agent_that_exited_to_prompt_is_parked_not_stuck(monkeypatch):
     # prompt with a fixed tail. Signal 2 (unchanged fingerprint across polls)
     # must not read that as a loop: a shell in the foreground is parked.
     now = int(time.time())
-    listing = f"oc-example-1::0::{now - 60}::::bash::0::::::::/home/u/app\n"
+    listing = _row("oc-example-1", 0, now - 60, "", "bash", 0, "", "", "", "/home/u/app")
     pane = "exit\nsome finished output\ndemo@host-a:~/app$ \n"
 
     def fake_run(argv, timeout=6):
@@ -1289,14 +1301,44 @@ def test_set_dir_argv_and_clean_dir():
     assert r[0] == "ssh" and r[-1] == "tmux set-option -t shell-a @serai_dir '~/odd dir'"
     assert sessions.clean_dir("  ~/git/p  ") == "~/git/p"
     assert sessions.clean_dir("") == ""                      # empty clears it
-    with pytest.raises(ValueError):                          # would corrupt _FMT parsing
-        sessions.clean_dir("~/a::b")
+    assert sessions.clean_dir("~/a::b") == "~/a::b"          # legal now that "::" is not the separator
+    with pytest.raises(ValueError):                          # would corrupt the _FMT parse
+        sessions.clean_dir("~/a\x1fb")
+
+
+def test_a_directory_containing_colons_round_trips(monkeypatch):
+    """`::` was only forbidden because it *was* the listing separator. Now that the
+    separator is \x1f, a dir that legitimately holds a colon pair is accepted,
+    written to @serai_dir, and comes back from the listing as one field."""
+    d = "~/git/we::ird"
+    assert sessions.clean_dir(d) == d
+    assert sessions.set_dir_argv("local", "shell-x", d)[-1] == d
+    monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6:
+                        _row("shell-x", 0, int(time.time()), "", "bash", 0, "", "", d, d))
+    monkeypatch.setattr(sessions, "_capture_lines", lambda host, name: [])
+    s = sessions._list_sessions_uncached("local")[0]
+    assert s.dir == d and s.path == d
+
+
+def test_a_command_containing_colons_does_not_shift_the_fields(monkeypatch):
+    """pane_current_command is whatever the OS reports, so it can hold `::` (and
+    could never be sanitised anyway). It must not push the fields after it."""
+    now = int(time.time())
+    listing = _row("shell-x", 0, now, "prod", "we::ird", 0, "--chrome", "bob", "~/git/proj", "/home/u/app")
+    monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6: listing)
+    monkeypatch.setattr(sessions, "_capture_lines", lambda host, name: [])
+    s = sessions._list_sessions_uncached("local")[0]
+    assert s.tags == ["prod"]
+    assert s.args == "--chrome"
+    assert s.owner == "bob"
+    assert s.dir == "~/git/proj"
+    assert s.path == "/home/u/app"
 
 
 def test_start_dir_parsed_from_listing(monkeypatch):
     # @serai_dir rides the listing next to the live cwd; both reach the Session
     now = int(time.time())
-    listing = f"shell-x::0::{now}::prod::bash::0::::::~/git/proj::/home/u/elsewhere\n"
+    listing = _row("shell-x", 0, now, "prod", "bash", 0, "", "", "~/git/proj", "/home/u/elsewhere")
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
             return listing
@@ -1317,8 +1359,11 @@ def test_api_dir_sets_and_validates(monkeypatch):
     assert r.json() == {"ok": True, "path": "~/git/p"}
     assert calls[-1][-2:] == ["@serai_dir", "~/git/p"]
     assert c.post("/api/dir", json={"host": "evil", "name": "shell-a", "path": "/x"}).status_code == 400
+    # "::" is legal in a directory now that the listing separator is \x1f
     assert c.post("/api/dir", json={"host": "local", "name": "shell-a",
-                                    "path": "/a::b"}).status_code == 400   # separator guard
+                                    "path": "/a::b"}).json() == {"ok": True, "path": "/a::b"}
+    assert c.post("/api/dir", json={"host": "local", "name": "shell-a",
+                                    "path": "/a\x1fb"}).status_code == 400   # separator guard
 
 
 def test_clean_tags_normalizes_and_dedupes():
@@ -1328,7 +1373,7 @@ def test_clean_tags_normalizes_and_dedupes():
 def test_session_tags_parsed_from_listing(monkeypatch):
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
-            return "shell-x::1::100::prod,db\ncc-y::0::99::\n"
+            return _row("shell-x", 1, 100, "prod,db") + _row("cc-y", 0, 99, "")
         return ""  # capture-pane and friends
     monkeypatch.setattr(sessions, "_run", fake_run)
     by = {s.name: s for s in sessions._list_sessions_uncached("local")}
@@ -1359,15 +1404,14 @@ def test_preview_skips_prompt_furniture():
 
 
 def test_state_and_tail_from_listing(monkeypatch):
-    # New 6-field _FMT: name::attached::activity::tags::pane_current_command::path
     now = int(time.time())
     listing = (
-        # name::attached::activity::tags::command::@serai_dir::path (dir empty here)
-        f"cc-working::0::{now}::::node::0::::::::/home/u/app\n"        # "esc to interrupt" -> working
-        f"cc-recent::0::{now - 60}::::node::0::::::::/home/u/app\n"    # parked at prompt, recent -> done
-        f"cc-stale::0::{now - 99999}::::node::0::::::::/home/u/app\n"  # dormant cc -> idle
-        f"shell-run::0::{now - 99999}::::npm::0::::::::/home/u/app\n"  # process running -> working
-        f"shell-idle::0::{now - 99999}::::bash::0::::::::/home/u/app\n"# quiet shell at prompt -> idle
+        # name, attached, activity, tags, command, alt, args, owner, dir, path
+        _row("cc-working", 0, now, "", "node", 0, "", "", "", "/home/u/app")        # "esc to interrupt" -> working
+        + _row("cc-recent", 0, now - 60, "", "node", 0, "", "", "", "/home/u/app")  # parked at prompt, recent -> done
+        + _row("cc-stale", 0, now - 99999, "", "node", 0, "", "", "", "/home/u/app")  # dormant cc -> idle
+        + _row("shell-run", 0, now - 99999, "", "npm", 0, "", "", "", "/home/u/app")  # process running -> working
+        + _row("shell-idle", 0, now - 99999, "", "bash", 0, "", "", "", "/home/u/app")  # quiet shell -> idle
     )
     def fake_run(argv, timeout=6):
         if "list-sessions" in argv:
@@ -1385,7 +1429,7 @@ def test_state_and_tail_from_listing(monkeypatch):
     assert by["cc-stale"].state == "idle"
     assert by["shell-run"].state == "running"
     assert by["shell-idle"].state == "idle"
-    # the tail preview is the pane's last lines; path is the final (::-safe) field
+    # the tail preview is the pane's last lines; path is the final (never-split) field
     assert "esc to interrupt" in by["cc-working"].tail.lower()
     assert "All good here" in by["cc-recent"].tail
     assert by["cc-recent"].path == "/home/u/app"
@@ -2766,12 +2810,14 @@ def test_clean_args_is_idempotent_and_rejects_the_unparseable():
     once = sessions.clean_args("; rm -rf ~")
     assert sessions.clean_args(once) == once
     for bad, why in [("--x 'unbalanced", "unbalanced quote"),
-                     ("--a::b", "the _FMT field separator"),
+                     ("--a\x1fb", "the _FMT field separator, itself a control char"),
                      ("--a\nb", "a newline would break the line-based listing"),
                      ("-" * 600, "absurd length")]:
         with pytest.raises(ValueError):
             sessions.clean_args(bad)
         assert why
+    # "::" used to be refused for the separator's sake; it is ordinary text now
+    assert sessions.clean_args("--include a::b") == "--include a::b"
 
 
 def test_extra_args_reach_claude_in_both_builders():
@@ -2789,15 +2835,16 @@ def test_extra_args_reach_claude_in_both_builders():
 
 def test_args_parsed_from_listing_without_shifting_the_path(monkeypatch):
     """@serai_args sits *before* @serai_dir precisely because the pane path must
-    stay the last field -- it can contain '::'. Prove both still land right."""
+    stay the last field -- it can hold anything printable, `::` included.
+    Prove both still land right."""
     now = int(time.time())
-    listing = f"cc-x::0::{now}::prod::node::0::--chrome::::~/git/proj::/home/u/we::ird\n"
+    listing = _row("cc-x", 0, now, "prod", "node", 0, "--chrome", "", "~/git/proj", "/home/u/we::ird")
     monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6: listing)
     monkeypatch.setattr(sessions, "_capture_lines", lambda host, name: [])
     s = sessions.list_sessions("local")[0]
     assert s.args == "--chrome"
     assert s.dir == "~/git/proj"
-    assert s.path == "/home/u/we::ird", "the path must still absorb the trailing '::'"
+    assert s.path == "/home/u/we::ird", "a '::' inside the path must not split it"
 
 
 def test_upsert_keeps_stored_args_when_a_session_comes_back_bare(tmp_path, monkeypatch):
@@ -2916,7 +2963,8 @@ def test_a_new_session_is_claimed_by_its_creator():
     assert "@serai_owner" not in " ".join(sessions.attach_argv("local", "cc-x", "claude"))
     # usernames are sanitised before becoming a tmux option value
     assert sessions.clean_owner("bob; rm -rf ~") == "bobrm-rf"
-    assert sessions.clean_owner("a::b") == "ab", "the _FMT separator can't survive"
+    assert sessions.clean_owner("a::b") == "ab", "':' is outside the username charset"
+    assert sessions.clean_owner("a\x1fb") == "ab", "so is the listing separator"
 
 
 def test_a_new_session_is_tagged_on_create():
@@ -3259,8 +3307,8 @@ def test_alternate_screen_flag_parsed_without_shifting_the_path(monkeypatch):
     scrolls itself) instead of tmux copy-mode, which there is a no-op. The path
     stays the LAST field, so adding this must not shift it."""
     now = int(time.time())
-    listing = (f"shell-tui::0::{now}::prod::less::1::::::~/git/proj::/home/u/app\n"
-               f"shell-plain::0::{now}::::bash::0::::::~/git/proj::/home/u/app\n")
+    listing = (_row("shell-tui", 0, now, "prod", "less", 1, "", "", "~/git/proj", "/home/u/app")
+               + _row("shell-plain", 0, now, "", "bash", 0, "", "", "~/git/proj", "/home/u/app"))
     monkeypatch.setattr(sessions, "_run", lambda argv, timeout=6:
                         listing if "list-sessions" in argv else "")
     by = {s.name: s for s in sessions._list_sessions_uncached("local")}

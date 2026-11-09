@@ -34,12 +34,19 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict
 
-# Fields joined by a delimiter unlikely to appear in a session name. The last
-# field is our per-session tags, stored as a tmux user option (@serai_tags) so
-# they persist in the session itself with no external store (invariants #1/#4).
-_FMT = ("#{session_name}::#{session_attached}::#{session_activity}::#{@serai_tags}"
-        "::#{pane_current_command}::#{alternate_on}::#{@serai_args}::#{@serai_owner}"
-        "::#{@serai_dir}::#{pane_current_path}")
+# ASCII unit separator: a control character, so it cannot arrive in any field from
+# a real path, a process name, or a user option set outside serai -- which the
+# older `::` could. clean_dir refuses it and clean_args' control-character rule
+# already covers it. The pane path is the LAST field either way, and the parser's
+# bounded split leaves it whole: a path may hold any printable byte.
+_SEP = "\x1f"
+
+# The listing format. Tags are a tmux user option (@serai_tags) so they persist
+# in the session itself with no external store (invariants #1/#4).
+_FMT = _SEP.join(("#{session_name}", "#{session_attached}", "#{session_activity}",
+                  "#{@serai_tags}", "#{pane_current_command}", "#{alternate_on}",
+                  "#{@serai_args}", "#{@serai_owner}", "#{@serai_dir}",
+                  "#{pane_current_path}"))
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new"]
 
 # Per-host TTL cache around remote session discovery. Local discovery is cheap
@@ -465,7 +472,7 @@ def _list_sessions_uncached(host: str) -> list[Session]:
 
     sessions: list[Session] = []
     for line in out.splitlines():
-        parts = line.split("::", 9)  # bounded split: the path (last) may contain "::"
+        parts = line.split(_SEP, 9)  # bounded split: the path (last) is never split
         if len(parts) < 2:
             continue
         name, attached_flag = parts[0], parts[1]
@@ -676,7 +683,7 @@ def attach_argv(host: str, name: str, kind: str, path: str | None = None,
         tmux_cmd += [";", "set-option", "-t", name, "@serai_owner", clean_owner(owner)]
     if tags:
         # Apply clean_tags once more (idempotent): the value is written with
-        # set-option and read back through the `::`-joined listing, so keep it
+        # set-option and read back through the `_SEP`-joined listing, so keep it
         # within the conservative charset exactly as for owner.
         tmux_cmd += [";", "set-option", "-t", name, "@serai_tags", ",".join(clean_tags(tags.split(",")))]
 
@@ -829,8 +836,10 @@ def scroll_argv(host: str, name: str, lines: int) -> list[str]:
 def clean_dir(path: str) -> str:
     """Normalise a user-supplied start dir, or "" to clear it.
 
-    "::" is the field separator in _FMT, so a path containing it would corrupt
-    the listing parse -- reject rather than silently mangle the row.
+    _SEP is the field separator in _FMT, so a directory containing it would
+    corrupt the listing parse -- reject rather than silently mangle the row.
+    Anything else is fine, `::` included: the pane path is the last field, and a
+    real directory can legitimately hold a colon pair.
 
     serai's own working directory is normalised away to "": it is where a session
     lands when it was created with **no** start dir at all, so accepting it would
@@ -839,8 +848,8 @@ def clean_dir(path: str) -> str:
     -- a stale client echoed that path back on attach, and it stuck.
     """
     p = (path or "").strip()
-    if "::" in p:
-        raise ValueError("a start directory cannot contain '::'")
+    if _SEP in p:
+        raise ValueError("a start directory cannot contain the unit separator")
     return "" if p and _same_dir(p, own_dir()) else p
 
 
@@ -860,8 +869,8 @@ def clean_args(raw: str) -> str:
 
     Rejected outright (raising ValueError, so the caller answers 400):
       * unbalanced quotes -- shlex can't parse it, and guessing would be worse
-      * "::" -- the field separator in _FMT; it would corrupt the listing parse
-      * control characters -- the listing is line-based, so a newline would too
+      * control characters -- the listing is line-based, so a newline would
+        corrupt it, and _SEP (itself a control char) is the field separator
 
     Idempotent: re-cleaning an already-cleaned value yields the same string,
     which matters because the stored value is what the edit dialog shows back.
@@ -871,9 +880,8 @@ def clean_args(raw: str) -> str:
         return ""
     if len(raw) > _MAX_ARGS:
         raise ValueError(f"extra arguments are limited to {_MAX_ARGS} characters")
-    if "::" in raw:
-        raise ValueError("extra arguments cannot contain '::'")
     if any(ord(c) < 32 or ord(c) == 127 for c in raw):
+        # covers _SEP (0x1f) as well as the newline that would break the listing
         raise ValueError("extra arguments cannot contain control characters")
     try:
         tokens = shlex.split(raw)
@@ -904,7 +912,7 @@ def clean_owner(name: str) -> str:
 
     Usernames come from our own store, but this is defence in depth on the same
     principle as clean_tags: the value is written with `tmux set-option` and read
-    back through the `::`-joined listing, so anything outside a conservative
+    back through the `_SEP`-joined listing, so anything outside a conservative
     charset (which would break the parse) is dropped rather than escaped.
     """
     return _OWNER_UNSAFE.sub("", (name or "").strip())[:64]
@@ -956,8 +964,9 @@ _TAG_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 def clean_tags(tags) -> list[str]:
     """Normalize tags: trim, collapse unsafe chars to '-', drop empties, dedupe.
 
-    Keeping tags within [A-Za-z0-9_.-] means they never contain the ',' or '::'
-    used as storage/field delimiters, so reading them back stays unambiguous.
+    Keeping tags within [A-Za-z0-9_.-] means they never contain the ',' that
+    separates them or the _SEP that separates listing fields, so reading them
+    back stays unambiguous.
     """
     out: list[str] = []
     for t in tags:
