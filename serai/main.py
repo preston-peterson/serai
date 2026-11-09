@@ -798,6 +798,35 @@ async def api_favorite(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "favorite": favorite})
 
 
+@app.post("/api/launch")
+async def api_launch(request: Request) -> JSONResponse:
+    """Set a saved profile's launch rule: "new", "continue" or "resume" ("" clears
+    it, falling back to the per-kind default). Body: {host, name, launch}.
+    Store-side only -- like favorite there is no tmux option to set; the value is
+    read back out of the profile when the session is next created. Owner-gated
+    like every other per-session mutation, so a guessed name can't change someone
+    else's profile. Takes effect on the session's *next* create.
+
+    Absent is not cleared: the key is required, so only an explicit "" reverts a
+    profile to the default. Coercing a missing key (or a null, or a 0) to "" would
+    let any body that omitted the field silently wipe a deliberate choice."""
+    t = await _target(request)
+    if isinstance(t, JSONResponse):
+        return t
+    body, host, name = t
+    if "launch" not in body:
+        return JSONResponse({"error": "launch required"}, status_code=400)
+    launch = body["launch"]
+    if not isinstance(launch, str):
+        return JSONResponse({"error": "launch must be a string"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(_pool, store.set_launch, host, name, launch)
+    except ValueError as exc:                      # not one of the three modes
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "launch": launch})
+
+
 @app.post("/api/files/transfer")
 async def api_files_transfer(request: Request):
     """Cross-host copy that reports progress as it runs (NDJSON, one line each):

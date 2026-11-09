@@ -25,9 +25,15 @@ except ImportError:
     fcntl = None
 
 # the descriptor kept per session -- enough to recreate it, nothing sensitive.
-# `favorite` is store-side only: it is never read from a live session (it is not a
-# tmux option), so upsert decides it purely from the stored record, never a poll.
-_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args", "owner", "favorite")
+# `favorite` and `launch` are store-side only: they are never read from a live
+# session (they are not tmux options), so upsert decides them purely from the
+# stored record, never a poll.
+_FIELDS = ("host", "name", "kind", "label", "path", "tags", "args", "owner",
+           "favorite", "launch")
+
+# how a profile starts an agent: a fresh run, pick up the last conversation, or
+# open the picker. "" is the clear -- fall back to effective_launch's default.
+LAUNCH_MODES = ("new", "continue", "resume", "")
 
 
 def _path() -> Path:
@@ -159,6 +165,11 @@ def upsert(records: list[dict]) -> None:
             # no favorite, so it is decided by the stored state, not the poll -- the
             # same three-for-three rule as tags/dir/args/owner.
             rec["favorite"] = bool((prior or {}).get("favorite"))
+            # ...and for launch, store-side in exactly the same way: a poll carries
+            # the stored choice forward and never clears it. The default for an
+            # undecided profile is computed on read by effective_launch, never
+            # written, so a poll storing "resume" here would be the bug.
+            rec["launch"] = (prior or {}).get("launch") or ""
             # An explicit start-in dir is authoritative over wherever the pane sits.
             # serai's own cwd is disqualified in *either* role: it is not a dir anyone
             # chose, and once it leaks into @serai_dir it would otherwise reassert
@@ -221,6 +232,40 @@ def set_favorite(host: str, name: str, favorite: bool) -> None:
             _save(data)
 
 
+def set_launch(host: str, name: str, launch: str) -> None:
+    """Record a deliberate launch choice (``new`` / ``continue`` / ``resume``, or
+    ``""`` to clear it and fall back to the per-kind default). Like set_favorite
+    this is the only writer that can change or clear a stored value a poll merely
+    carries forward; a no-op if the session isn't snapshotted yet.
+
+    Raises ValueError for anything outside LAUNCH_MODES. The value is a fixed
+    literal, never free text -- the same discipline as resume_flag's choices, and
+    what keeps a guessed payload from becoming a command-line fragment (invariant
+    #3)."""
+    if launch not in LAUNCH_MODES:
+        raise ValueError(f"invalid launch mode: {launch!r}")
+    with _locked():
+        data = _load()
+        rec = data.get(_key(host, name))
+        if rec is None:
+            return
+        if rec.get("launch") != launch:
+            rec["launch"] = launch
+            _save(data)
+
+
+def effective_launch(rec: dict) -> str:
+    """The launch rule a profile actually means: what was chosen, or the default
+    for its kind -- ``resume`` for an agent (there is a conversation to return to)
+    and ``new`` for anything else. Computed, never stored, so the default can
+    change without a migration."""
+    stored = rec.get("launch") or ""
+    if stored:
+        return stored
+    from . import sessions            # leaf import: sessions never imports store
+    return "resume" if sessions._AGENTS.get(rec.get("kind")) else "new"
+
+
 def favorites() -> list[dict]:
     """The saved profiles flagged as favorites, in the stable saved() order."""
     return [r for r in saved() if r.get("favorite")]
@@ -242,10 +287,19 @@ def get(host: str, name: str) -> dict | None:
 def saved() -> list[dict]:
     """The saved session descriptors, in a stable order.
 
+    Each record carries ``launch`` as its *effective* value (the choice, or the
+    per-kind default), so every reader -- the favorites menu, + New, the palette
+    -- sees one launch rule without each having to re-implement the default. The
+    default is computed on read and never written back: on disk an undecided
+    profile stays ``launch: ""``.
+
     Read under the lock too: ``atomic_write`` already means a reader never sees
     a half-written file, but holding the lock makes ``saved()`` a consistent
     snapshot with respect to a locked writer's whole load-mutate-save, not just
     to its final rename."""
     with _locked():
         data = _load()
-    return sorted(data.values(), key=lambda r: (r.get("host", ""), r.get("name", "")))
+    out = sorted(data.values(), key=lambda r: (r.get("host", ""), r.get("name", "")))
+    for r in out:
+        r["launch"] = effective_launch(r)
+    return out

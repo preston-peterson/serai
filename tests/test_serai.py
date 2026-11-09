@@ -2855,6 +2855,116 @@ def test_api_favorite_refuses_someone_elses_profile(auth_on, monkeypatch):
     assert store.get("local", "cc-x")["favorite"] is True
 
 
+def test_store_launch_carries_forward_and_set_launch(tmp_path, monkeypatch):
+    """launch is store-side like favorite (never a live value), so a poll must not
+    clear it. set_launch is the only writer that can change or clear it, and it
+    accepts only the fixed mode literals -- never free text."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([{"host": "local", "name": "cc-demo", "kind": "claude", "label": "demo",
+                   "path": "/p", "tags": []}])
+    assert store.get("local", "cc-demo")["launch"] == "", "undecided on disk"
+    store.set_launch("local", "cc-demo", "continue")
+    assert store.get("local", "cc-demo")["launch"] == "continue"
+    # the next poll sees the session again but carries no launch -> it must
+    # survive, or a poll would silently reset every profile to the default
+    store.upsert([{"host": "local", "name": "cc-demo", "kind": "claude", "label": "demo",
+                   "path": "/p", "tags": []}])
+    assert store.get("local", "cc-demo")["launch"] == "continue"
+    store.set_launch("local", "cc-demo", "")            # the only thing that clears it
+    assert store.get("local", "cc-demo")["launch"] == ""
+    for mode in ("new", "continue", "resume", ""):      # the whole accepted set
+        store.set_launch("local", "cc-demo", mode)
+        assert store.get("local", "cc-demo")["launch"] == mode
+    for bad in ("; rm", "bogus", "Resume"):
+        with pytest.raises(ValueError):
+            store.set_launch("local", "cc-demo", bad)
+    assert store.get("local", "cc-demo")["launch"] == "", "a rejected write changes nothing"
+    store.set_launch("local", "ghost", "resume")        # no-op on an unknown session
+    assert store.get("local", "ghost") is None
+
+
+def test_store_saved_reports_effective_launch(tmp_path, monkeypatch):
+    """saved() reports the *effective* rule so every reader sees one launch rule:
+    the stored choice when there is one, else resume for an agent, new otherwise.
+    The default is computed on read, never written back to disk."""
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    store.upsert([
+        {"host": "local", "name": "cc-demo", "kind": "claude", "label": "demo",
+         "path": "/p", "tags": []},
+        {"host": "local", "name": "shell-demo", "kind": "shell", "label": "demo",
+         "path": "/p", "tags": []},
+    ])
+    recs = {r["name"]: r for r in store.saved()}
+    assert recs["cc-demo"]["launch"] == "resume"
+    assert recs["shell-demo"]["launch"] == "new"
+    assert store.get("local", "cc-demo")["launch"] == "", "the default is not stored"
+    store.set_launch("local", "shell-demo", "resume")
+    recs = {r["name"]: r for r in store.saved()}
+    assert recs["shell-demo"]["launch"] == "resume", "a stored choice beats the default"
+
+
+def test_api_launch_sets_and_scopes(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERAI_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    client = TestClient(app)
+    store.upsert([{"host": "local", "name": "cc-demo", "kind": "claude", "label": "demo",
+                   "path": "/p", "tags": []}])
+    r = client.post("/api/launch", json={"host": "local", "name": "cc-demo",
+                                         "launch": "continue"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "launch": "continue"}
+    assert store.get("local", "cc-demo")["launch"] == "continue"
+    # a profile rides /api/sessions/saved -- with its effective launch
+    saved = {r["name"]: r for r in client.get("/api/sessions/saved").json()}
+    assert saved["cc-demo"]["launch"] == "continue"
+    # anything outside the mode literals is refused, not stored
+    for bad in ("; rm", "bogus"):
+        bad_r = client.post("/api/launch", json={"host": "local", "name": "cc-demo",
+                                                 "launch": bad})
+        assert bad_r.status_code == 400 and "error" in bad_r.json()
+    assert store.get("local", "cc-demo")["launch"] == "continue"
+    # absent is not cleared: the key is required, so a body that omits it cannot
+    # silently revert a deliberate choice (only an explicit "" below does that)
+    missing = client.post("/api/launch", json={"host": "local", "name": "cc-demo"})
+    assert missing.status_code == 400 and "error" in missing.json()
+    assert store.get("local", "cc-demo")["launch"] == "continue"
+    # nor can a null, which would otherwise be coerced into the clear
+    null = client.post("/api/launch", json={"host": "local", "name": "cc-demo",
+                                            "launch": None})
+    assert null.status_code == 400 and "error" in null.json()
+    assert store.get("local", "cc-demo")["launch"] == "continue"
+    # an explicit clear, by contrast, sticks, and falls back to the kind's default
+    # rather than storing "new"
+    assert client.post("/api/launch", json={"host": "local", "name": "cc-demo",
+                                            "launch": ""}).status_code == 200
+    assert store.get("local", "cc-demo")["launch"] == ""
+    saved = {r["name"]: r for r in client.get("/api/sessions/saved").json()}
+    assert saved["cc-demo"]["launch"] == "resume"
+    # an unknown host is refused like every other session endpoint (invariant #3)
+    assert client.post("/api/launch", json={"host": "evil", "name": "cc-demo",
+                                            "launch": "resume"}).status_code == 400
+
+
+def test_api_launch_refuses_someone_elses_profile(auth_on, monkeypatch):
+    """A guessed name can't change someone else's launch rule (the owner gate),
+    mirroring /api/favorite."""
+    monkeypatch.setattr(config, "parse_ssh_config", lambda *a, **k: [])
+    monkeypatch.setattr(sessions, "session_exists", lambda h, n: False)
+    auth.add_user("alice", "longenough", admin=True)
+    auth.add_user("bob", "longenough")
+    store.upsert([{"host": "local", "name": "cc-demo", "kind": "claude", "label": "demo",
+                   "path": "/p", "tags": [], "owner": "alice"}])
+    bob = TestClient(app)
+    bob.post("/api/login", json={"username": "bob", "password": "longenough"})
+    assert bob.post("/api/launch", json={"host": "local", "name": "cc-demo",
+                                         "launch": "new"}).status_code == 403
+    assert store.get("local", "cc-demo")["launch"] == ""
+    admin = TestClient(app)
+    admin.post("/api/login", json={"username": "alice", "password": "longenough"})
+    assert admin.post("/api/launch", json={"host": "local", "name": "cc-demo",
+                                           "launch": "new"}).status_code == 200
+    assert store.get("local", "cc-demo")["launch"] == "new"
+
+
 def test_restart_keeps_the_restore_record_unlike_kill(monkeypatch, tmp_path):
     """The whole point of a separate endpoint: /api/kill calls store.remove, which
     would throw away the record the client needs to bring the session back."""
