@@ -835,8 +835,13 @@ def client_env() -> dict[str, str]:
     us -- so this is what every session's programs see (item 0e). Under systemd
     there is no TERM; COLORTERM advertises 24-bit colour to the apps, as the PTY
     bridge always did.
+
+    serai's own settings (SERAI_*) are left out: when serai's create starts the
+    tmux server they become its global environment, and every shell inherited
+    them -- a `./run.sh` typed in a session then took SERAI_HOST=0.0.0.0 and
+    listened on the LAN instead of localhost.
     """
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SERAI_")}
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     return env
