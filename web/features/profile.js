@@ -114,6 +114,11 @@ function form({ session = null, prefill = {} }) {
   const note = h("div.note", { hidden: true });
   const warn = h("div.note.warn", { hidden: true }, WARN);
   let busy = false;
+  // + New, agent kinds: the directory *is* ~/git/<label> -- a real value that
+  // follows the label until you type in the field, as it was in v2 (3.0.0 shrank
+  // it to a placeholder, so the form showed a path and the session started in ~).
+  // A directory that came prefilled or from a matched profile is a choice already.
+  let dirAuto = !edit && !start.dir;
 
   /** The ssh aliases plus this form's own host, which stays listed even if the
    *  list is cold or missing it -- the select must never read as a different host
@@ -127,6 +132,8 @@ function form({ session = null, prefill = {} }) {
     sync();
   }
 
+  // Typing in the directory takes it over; emptying it hands it back to the label.
+  dirInput.addEventListener("input", () => { dirAuto = !edit && !dirInput.value.trim(); });
   for (const el of [labelInput, dirInput, argsInput]) el.addEventListener("input", sync);
 
   const dlg = dialog.open({
@@ -161,15 +168,25 @@ function form({ session = null, prefill = {} }) {
 
   // -- one pass over everything the fields say -------------------------------
 
-  function sync() {
+  function sync(ev) {
     const name = nameOf(st.kind, labelInput.value);
     const agentOn = kindInfo(st.kind).agent;
     fill(labelHelp, "becomes ", h("b", { class: "mono" }, name || "…"));
-    dirInput.placeholder = `~/git/${labelInput.value.trim() || "…"}`;
+    // Not while you're emptying the directory itself: refilling it under the
+    // caret would make it impossible to clear and retype.
+    if (ev?.target !== dirInput) followLabel(agentOn);
     rowShown(launchSeg, agentOn);
     rowShown(argsInput, agentOn);
     if (edit) warn.hidden = dirInput.value === was.dir && argsInput.value === was.args;
     else matchProfile(name);
+    // The placeholder says what an empty field will really do (see create()).
+    dirInput.placeholder = dirAuto && agentOn ? autoDir() : "~ (home) if empty";
+  }
+
+  function autoDir() { return `~/git/${labelInput.value.trim() || "…"}`; }
+
+  function followLabel(agentOn) {
+    if (dirAuto) dirInput.value = agentOn && labelInput.value.trim() ? autoDir() : "";
   }
 
   /** A name typed over a saved profile that isn't live: say so, and use it. Only
@@ -182,6 +199,7 @@ function form({ session = null, prefill = {} }) {
     st.matched = k;
     const launch = p.launch || "resume";
     dirInput.value = p.path || "";
+    dirAuto = false;                       // the profile's directory, even an empty one
     argsInput.value = p.args || "";
     st.tags = [...(p.tags || [])];
     tags.redraw();
@@ -194,8 +212,10 @@ function form({ session = null, prefill = {} }) {
   function create() {
     if (!needLabel()) return false;
     const label = labelInput.value.trim();
+    // An agent's emptied directory still means ~/git/<label>, as its placeholder says.
+    const path = dirInput.value.trim() || (dirAuto && kindInfo(st.kind).agent ? `~/git/${label}` : "");
     const target = {
-      host: st.host, kind: st.kind, label, name: nameOf(st.kind, label), path: dirInput.value,
+      host: st.host, kind: st.kind, label, name: nameOf(st.kind, label), path,
       resume: resumeOf(st.kind, st.launch), args: argsInput.value, tags: st.tags.join(","),
     };
     panes.open(target);

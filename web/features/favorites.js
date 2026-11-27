@@ -165,23 +165,55 @@ export function openFavorites() {
     dragging = true;
     const grip = tr.querySelector(".grip");
     try { grip.setPointerCapture(e.pointerId); } catch { /* stale row */ }
-    const move = (ev) => {
-      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+    // A long list scrolls inside the dialog body, so a row dragged toward an edge
+    // keeps going: each frame the pointer sits within EDGE px of the top or bottom,
+    // the body scrolls (faster the closer it is) and the row is re-placed under it.
+    const scroller = tbody.closest(".dialog-body");
+    const EDGE = 40;
+    let x = e.clientX, y = e.clientY, raf = 0;
+    const place = () => {
+      const under = document.elementFromPoint(x, y);
       const target = under && under.closest("tr");
       if (!target || target === tr || target.parentElement !== tbody) return;
       const r = target.getBoundingClientRect();
-      tbody.insertBefore(tr, ev.clientY > r.top + r.height / 2 ? target.nextElementSibling : target);
+      tbody.insertBefore(tr, y > r.top + r.height / 2 ? target.nextElementSibling : target);
     };
-    const up = () => {
-      grip.removeEventListener("pointermove", move);
-      grip.removeEventListener("pointerup", up);
-      grip.removeEventListener("pointercancel", up);
+    const tick = () => {
+      raf = 0;
+      if (!dragging || !scroller) return;
+      const b = scroller.getBoundingClientRect();
+      const near = (d) => Math.min(24, Math.ceil(d / 4));   // past the edge: capped, not a fling
+      const step = y < b.top + EDGE ? -near(b.top + EDGE - y)
+        : y > b.bottom - EDGE ? near(y - (b.bottom - EDGE)) : 0;
+      if (!step) return;
+      const before = scroller.scrollTop;
+      scroller.scrollTop += step;
+      if (scroller.scrollTop === before) return;   // at the end: nothing left to reveal
+      place();
+      raf = requestAnimationFrame(tick);
+    };
+    // On the window, not the grip: re-placing the row moves it in the DOM, and
+    // that releases the grip's pointer capture -- listening there, the drag went
+    // deaf after its first swap whenever the pointer outran the row.
+    const id = e.pointerId;
+    const move = (ev) => {
+      if (ev.pointerId !== id) return;
+      x = ev.clientX; y = ev.clientY;
+      place();
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (raf) cancelAnimationFrame(raf);
       dragging = false;
       remember("favOrder", [...tbody.querySelectorAll("tr")].map((x) => x.dataset.key));
       render();
     };
-    grip.addEventListener("pointermove", move);
-    grip.addEventListener("pointerup", up);
-    grip.addEventListener("pointercancel", up);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   }
 }

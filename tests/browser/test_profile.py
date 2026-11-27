@@ -107,3 +107,82 @@ def test_new_session_then_tag_it_from_the_rail(stack):
 
     asyncio.run(asyncio.wait_for(run(), 120))
     assert not failures, "session form failures:\n  " + "\n  ".join(failures)
+
+
+def test_an_agent_directory_follows_its_label(stack):
+    """+ New for an agent fills Directory with ~/git/<label> as a real value that
+    follows the label until you type in the field (v2's rule; 3.0.0 had shrunk it
+    to a placeholder, so the form showed a path and the session started in ~).
+    Emptying the field hands it back to the label, and creating with it empty
+    still means ~/git/<label>. The directory doesn't exist here, so `cd` fails
+    and the agent never starts: the session drops to its shell, still alive."""
+    failures = []
+
+    def check(name, ok, detail=""):
+        if not ok:
+            failures.append(f"{name} {detail}".strip())
+
+    def field(name):
+        return FIELD.format(name=name)
+
+    DIR = f"({field('Directory')}).querySelector('input')"
+    LABEL = f"({field('Label')}).querySelector('input')"
+
+    async def kind(c, k):
+        await c.eval(f"[...({field('Kind')}).querySelectorAll('button')].find(b => b.textContent === '{k}').click()")
+
+    async def run():
+        c = await page(stack)
+        try:
+            await c.wait("document.querySelectorAll('.rail .row').length >= 2", 15)
+            await c.eval("[...document.querySelectorAll('.topbar .slots button')]"
+                         ".find(b => b.textContent.includes('+ New')).click()")
+            await c.wait("!!document.querySelector('.dialog.form')", 10)
+
+            await kind(c, "claude")
+            await c.eval(f"{LABEL}.focus()")
+            await c.send("Input.insertText", text="pro")
+            check("the directory is filled from the label", await c.eval(f"{DIR}.value") == "~/git/pro",
+                  await c.eval(f"{DIR}.value"))
+            await c.send("Input.insertText", text="be")
+            check("and follows it", await c.eval(f"{DIR}.value") == "~/git/probe")
+
+            await kind(c, "shell")
+            check("a shell starts in ~ unless told", await c.eval(f"{DIR}.value") == ""
+                  and await c.eval(f"{DIR}.placeholder") == "~ (home) if empty")
+            await kind(c, "claude")
+            check("back to an agent, it fills again", await c.eval(f"{DIR}.value") == "~/git/probe")
+
+            await c.eval(f"{DIR}.focus(); {DIR}.select()")
+            await c.send("Input.insertText", text="~/elsewhere")
+            await c.eval(f"{LABEL}.focus()")
+            await c.send("Input.insertText", text="2")
+            check("a typed directory is left alone", await c.eval(f"{DIR}.value") == "~/elsewhere")
+
+            await c.eval(f"{DIR}.focus(); {DIR}.select()")
+            await c.key("Backspace", "Backspace", vk=8)
+            check("emptying it doesn't refill under the caret", await c.eval(f"{DIR}.value") == "")
+            check("and the placeholder says what empty means", await c.eval(f"{DIR}.placeholder") == "~/git/probe2")
+
+            await c.eval(BUTTON.format(label="Create & attach"))
+            await c.wait("!document.querySelector('.dialog.form')", 10)
+            got = ""
+            for _ in range(40):
+                got = stack.tmux("display-message", "-p", "-t", "=cc-probe2:", "#{@serai_dir}").stdout.strip()
+                if got:
+                    break
+                await asyncio.sleep(0.25)
+            check("the session's directory is ~/git/<label>", got.endswith("git/probe2"), repr(got))
+            await asyncio.sleep(1.5)
+            alive = stack.tmux("has-session", "-t", "=cc-probe2").returncode == 0
+            pane = stack.tmux("capture-pane", "-p", "-t", "=cc-probe2:").stdout
+            check("a missing directory leaves the session alive at its shell", alive, pane[-300:])
+            print("pane after a missing directory:\n" + pane.strip())
+
+            errs = [e for e in c.events if e.get("method") == "Runtime.exceptionThrown"]
+            check("no JS exceptions", not errs, json.dumps(errs)[:300])
+        finally:
+            await c.close()
+
+    asyncio.run(asyncio.wait_for(run(), 120))
+    assert not failures, "agent directory failures:\n  " + "\n  ".join(failures)

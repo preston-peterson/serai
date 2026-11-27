@@ -9,6 +9,26 @@ running instance always reports what it is.
 
 ## [Unreleased]
 
+## [3.0.1]
+
+### Fixed
+
+- **+ New fills in an agent's directory again.** Typing a label sets Directory
+  to `~/git/<label>` as a real value that follows the label until you type in
+  the field, as 2.x did. 3.0.0 showed that path only as a hint, so the session
+  started in your home directory instead. A saved profile's directory still
+  wins, and an emptied field still means `~/git/<label>`. If that directory
+  doesn't exist, the session opens at a shell prompt that says so.
+- **Long dialogs fit the window and scroll.** A dialog taller than the screen
+  (a long ★ Favorites list, the session form on a short window) used to run off
+  both edges, title and ✕ included, with no way to scroll. Now the title and
+  buttons stay put and the middle scrolls. The ★ table keeps its header row in
+  view, and dragging a row to the top or bottom edge scrolls the list.
+- **Reordering favorites by dragging no longer stalls** when the pointer moves
+  ahead of the row.
+- **The ★ panel fits a phone:** name, host and Restore/Attach, without sideways
+  scrolling; the other columns are left to Edit. Its row borders line up again.
+
 ## [3.0.0]
 
 A rewrite of the terminal bridge and the web client. Sessions, saved profiles,
